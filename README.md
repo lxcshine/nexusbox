@@ -12,12 +12,19 @@
   <!-- Badges -->
   <table><tr>
     <td><img src="https://img.shields.io/badge/🤖_AI_Agent-Autonomous_Execution-blue?style=flat-square" alt="AI Agent" /></td>
+    
     <td><img src="https://img.shields.io/badge/🔌_MCP-18_Real_Tools-green?style=flat-square" alt="MCP" /></td>
+    
     <td><img src="https://img.shields.io/badge/🔒_Sandbox-Workspace_Isolation-red?style=flat-square" alt="Sandbox" /></td>
+    
     <td><img src="https://img.shields.io/badge/🛡️_Security-Path_Traversal_Protection-orange?style=flat-square" alt="Security" /></td>
+    
     <td><img src="https://img.shields.io/badge/🐳_Docker-One_Command_Deploy-purple?style=flat-square" alt="Docker" /></td>
+    
     <td><img src="https://img.shields.io/badge/☸️_Kubernetes-CRI_Compatible-cyan?style=flat-square" alt="Kubernetes" /></td>
+    
     <td><img src="https://img.shields.io/badge/👥_Multi_Tenant-3_Isolation_Levels-yellow?style=flat-square" alt="Multi-Tenant" /></td>
+    
     <td><img src="https://img.shields.io/badge/⚡_Startup-Seconds_to_Ready-brightgreen?style=flat-square" alt="Startup" /></td>
   </tr></table>
 </p>
