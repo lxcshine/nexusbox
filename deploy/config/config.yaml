@@ -1,0 +1,151 @@
+# NexusBox Configuration
+
+# Manager configuration
+manager:
+  httpPort: 8080
+  metricsPort: 9090
+  workers: 5
+  enableScheduler: true
+  enableController: true
+
+# Scheduler configuration
+scheduler:
+  maxAttempts: 5
+  workers: 3
+  batchEnabled: true
+  plugins:
+    preFilter:
+      - name: ResourceFit
+      - name: PrioritySort
+    filter:
+      - name: ResourceFit
+      - name: TenantAffinity
+      - name: TenantIsolation
+      - name: RuntimeCompatibility
+    score:
+      - name: NodeResourcesFit
+        weight: 1
+      - name: NodeResourcesBalancedAllocation
+        weight: 1
+      - name: ImageLocality
+        weight: 1
+    reserve:
+      - name: DefaultReserve
+    permit:
+      - name: BatchScheduling
+    preBind:
+      - name: DefaultPreBinder
+    bind:
+      - name: DefaultBinder
+    postBind:
+      - name: DefaultPostBinder
+
+# Runtime configuration
+runtime:
+  kataContainersEndpoint: /run/kata-containers/containerd/kata.sock
+  gvisorEndpoint: /run/containerd/runsc.sock
+  runcEndpoint: /run/containerd/containerd.sock
+  poolEnabled: true
+  poolSize:
+    kata-containers: 5
+    gvisor: 10
+    runc: 20
+  poolRefreshInterval: 30s
+  createTimeout: 120s
+  startTimeout: 60s
+  stopTimeout: 30s
+  pauseTimeout: 30s
+  resumeTimeout: 60s
+  maxConcurrentOperations: 100
+
+# Agent configuration
+agent:
+  listenPort: 9091
+  heartbeatInterval: 10s
+  metricsInterval: 15s
+  maxSandboxes: 100
+  supportedRuntimes:
+    - kata-containers
+    - gvisor
+    - runc
+
+# Kata Containers VM configuration
+kata:
+  hypervisorType: qemu
+  defaultVCPUs: 1
+  defaultMemoryMB: 1024
+  defaultMaxVCPUs: 8
+  defaultMaxMemoryMB: 32768
+  sharedFS: virtiofs
+  virtioFSDaemon: /usr/libexec/virtiofsd
+  enableHugePages: false
+  image: /usr/share/kata-containers/kata-ubuntu.img
+  kernel: /usr/share/kata-containers/vmlinuz.container
+  bootToRootTimeMs: 1000
+
+# Metrics configuration
+metrics:
+  enabled: true
+  collectionInterval: 15s
+  retentionPeriod: 24h
+  exportInterval: 60s
+
+# Cost tracking configuration
+cost:
+  pricing:
+    cpuPerCoreHour: 0.02
+    memoryPerGBHour: 0.004
+    gpuPerHour: 0.50
+    storagePerGBMonth: 0.10
+    sandboxBasePrice: 0.001
+  runtimePremium:
+    kata-containers: 1.5
+    gvisor: 1.2
+    runc: 1.0
+  isolationPremium:
+    maximum: 2.0
+    enhanced: 1.5
+    standard: 1.0
+    basic: 0.8
+
+# Alerting configuration
+alerting:
+  rules:
+    - name: NodeDown
+      condition: node_status != "Ready"
+      severity: critical
+      cooldown: 300
+    - name: HighCPUUsage
+      condition: cpu_usage_percent > 90
+      severity: warning
+      cooldown: 600
+    - name: HighMemoryUsage
+      condition: memory_usage_percent > 90
+      severity: warning
+      cooldown: 600
+    - name: SandboxFailed
+      condition: sandbox_phase == "Failed"
+      severity: warning
+      cooldown: 60
+    - name: TenantQuotaExceeded
+      condition: quota_usage_percent > 95
+      severity: critical
+      cooldown: 300
+    - name: SchedulingBacklog
+      condition: pending_sandboxes > 100
+      severity: warning
+      cooldown: 300
+  notificationChannels:
+    - type: webhook
+      config:
+        url: ""
+    - type: slack
+      config:
+        webhook_url: ""
+
+# Dashboard configuration
+dashboard:
+  host: "0.0.0.0"
+  port: 3000
+  apiURL: "http://sandbox-manager:8080"
+  refreshInterval: 15
