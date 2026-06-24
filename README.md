@@ -11,7 +11,6 @@
 <p align="center">
   <a href="README_zh.md">中文</a> &bull;
   <a href="#features">Features</a> &bull;
-  <a href="#architecture">Architecture</a> &bull;
   <a href="#quick-start">Quick Start</a> &bull;
   <a href="#docker-deployment">Docker Deployment</a> &bull;
   <a href="#mcp-tools">MCP Tools</a> &bull;
