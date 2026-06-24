@@ -29,9 +29,9 @@
   <a href="#features">Features</a> &bull;
   <a href="#quick-start">Quick Start</a> &bull;
   <a href="#docker-deployment">Docker Deployment</a> &bull;
-  <br/>
   <a href="#mcp-tools">MCP Tools</a> &bull;
   <a href="#trae-integration">Trae Integration</a> &bull;
+  <br/>
   <a href="#api-reference">API Reference</a> &bull;
   <a href="#security">Security</a> &bull;
   <a href="#multi-tenancy">Multi-Tenancy</a>
