@@ -11,7 +11,6 @@
 <p align="center">
   <a href="README.md">English</a> &bull;
   <a href="#功能特性">功能特性</a> &bull;
-  <a href="#系统架构">系统架构</a> &bull;
   <a href="#快速开始">快速开始</a> &bull;
   <a href="#docker-部署">Docker 部署</a> &bull;
   <a href="#mcp-工具">MCP 工具</a> &bull;
