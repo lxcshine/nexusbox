@@ -310,9 +310,9 @@ Only files within the workspace directory are accessible.
 
 ```
 ┌──────────────────┐     HTTP POST      ┌──────────────────┐
-│                  │  ───────────────▶  │                  │
-│   Trae AI Chat   │   JSON-RPC 2.0    │   MCP Hub        │
-│                  │  ◀───────────────  │   (port 8079)    │
+│                  │  ───────────────▶ │                  │
+│   Trae AI Chat   │   JSON-RPC 2.0     │   MCP Hub        │
+│                  │  ◀─────────────── │   (port 8079)    │
 │                  │   Tool Results     │                  │
 └──────────────────┘                    └────────┬─────────┘
                                                  │
