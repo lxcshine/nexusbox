@@ -5,7 +5,7 @@
 <h1 align="center">NexusBox</h1>
 
 <p align="center">
-  <strong>Enterprise-Grade AI Agent Sandbox with MCP Integration</strong>
+  <strong>AI Agent Sandbox with MCP Integration</strong>
 </p>
 
 <p align="center">
