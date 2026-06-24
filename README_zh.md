@@ -9,6 +9,20 @@
 </p>
 
 <p align="center">
+  <!-- Badges Row 1: Core -->
+  <img src="https://img.shields.io/badge/🤖_AI_Agent-Autonomous_Execution-blue?style=flat-square" alt="AI Agent" />
+  <img src="https://img.shields.io/badge/🔌_MCP-18_Real_Tools-green?style=flat-square" alt="MCP" />
+  <img src="https://img.shields.io/badge/🔒_Sandbox-Workspace_Isolation-red?style=flat-square" alt="Sandbox" />
+  <img src="https://img.shields.io/badge/🛡️_Security-Path_Traversal_Protection-orange?style=flat-square" alt="Security" />
+  <br/>
+  <!-- Badges Row 2: Platform -->
+  <img src="https://img.shields.io/badge/🐳_Docker-One_Command_Deploy-purple?style=flat-square" alt="Docker" />
+  <img src="https://img.shields.io/badge/☸️_Kubernetes-CRI_Compatible-cyan?style=flat-square" alt="Kubernetes" />
+  <img src="https://img.shields.io/badge/👥_Multi_Tenant-3_Isolation_Levels-yellow?style=flat-square" alt="Multi-Tenant" />
+  <img src="https://img.shields.io/badge/⚡_Startup-Seconds_to_Ready-brightgreen?style=flat-square" alt="Startup" />
+</p>
+
+<p align="center">
   <a href="README.md">English</a> &bull;
   <a href="#功能特性">功能特性</a> &bull;
   <a href="#快速开始">快速开始</a> &bull;
