@@ -18,8 +18,6 @@
   <!-- Badges Row 2: Platform -->
   <img src="https://img.shields.io/badge/🐳_Docker-One_Command_Deploy-purple?style=flat-square" alt="Docker" />
   <img src="https://img.shields.io/badge/☸️_Kubernetes-CRI_Compatible-cyan?style=flat-square" alt="Kubernetes" />
-  <br/>
-  <!-- Badges Row 3: Features -->
   <img src="https://img.shields.io/badge/👥_Multi_Tenant-3_Isolation_Levels-yellow?style=flat-square" alt="Multi-Tenant" />
   <img src="https://img.shields.io/badge/⚡_Startup-Seconds_to_Ready-brightgreen?style=flat-square" alt="Startup" />
 </p>
