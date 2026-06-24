@@ -68,55 +68,6 @@ Unlike simple demo sandboxes that only support `curl` or `docker exec`, NexusBox
 
 ---
 
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────┐
-│                    AI Agent (Trae/Claude/Cursor)         │
-│                                                         │
-│    Sends JSON-RPC 2.0 requests to MCP Hub               │
-└──────────────────────┬──────────────────────────────────┘
-                       │ HTTP POST
-                       ▼
-┌─────────────────────────────────────────────────────────┐
-│                  MCP Hub (Port 8079)                     │
-│                                                         │
-│  ┌─────────────┐ ┌─────────────┐ ┌───────┐ ┌────────┐  │
-│  │ Shell Server│ │ File Server │ │Code   │ │Browser │  │
-│  │             │ │             │ │Server │ │Server  │  │
-│  │ shell_exec  │ │ file_read   │ │code_  │ │browser_│  │
-│  │ shell_bg    │ │ file_write  │ │run    │ │navigate│  │
-│  │ shell_check │ │ file_list   │ │code_  │ │browser_│  │
-│  │             │ │ file_search │ │install│ │screen  │  │
-│  │             │ │ file_replace│ │       │ │browser_│  │
-│  │             │ │ file_delete │ │       │ │click   │  │
-│  │             │ │ file_move   │ │       │ │browser_│  │
-│  │             │ │             │ │       │ │type    │  │
-│  │             │ │             │ │       │ │browser_│  │
-│  │             │ │             │ │       │ │eval    │  │
-│  └─────────────┘ └─────────────┘ └───────┘ └────────┘  │
-└──────────────────────┬──────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────┐
-│               Gateway API (Port 8080)                    │
-│                                                         │
-│  /v1/shell/exec  /v1/file/read  /v1/code/execute        │
-│  /v1/sandboxes   /v1/system/env  /v1/browser/navigate   │
-│  /healthz        /v1/metrics                             │
-└──────────────────────┬──────────────────────────────────┘
-                       │
-                       ▼
-┌─────────────────────────────────────────────────────────┐
-│              Sandbox Workspace (/home/sandbox)           │
-│                                                         │
-│  Isolated filesystem with path traversal protection     │
-│  Python 3 + Node.js 22 + Chromium + Jupyter + VS Code  │
-└─────────────────────────────────────────────────────────┘
-```
-
----
-
 ## Quick Start
 
 ### Option 1: Native Binary (Fast, No Docker)
