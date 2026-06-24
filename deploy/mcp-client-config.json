@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "nexusbox": {
+      "url": "http://localhost:8079/mcp",
+      "transport": "http"
+    }
+  }
+}
