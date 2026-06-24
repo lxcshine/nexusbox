@@ -13,9 +13,9 @@
   <img src="https://img.shields.io/badge/🤖_AI_Agent-Autonomous_Execution-blue?style=flat-square" alt="AI Agent" />
   <img src="https://img.shields.io/badge/🔌_MCP-18_Real_Tools-green?style=flat-square" alt="MCP" />
   <img src="https://img.shields.io/badge/🔒_Sandbox-Workspace_Isolation-red?style=flat-square" alt="Sandbox" />
+  <img src="https://img.shields.io/badge/🛡️_Security-Path_Traversal_Protection-orange?style=flat-square" alt="Security" />
   <br/>
   <!-- Badges Row 2: Platform -->
-  <img src="https://img.shields.io/badge/🛡️_Security-Path_Traversal_Protection-orange?style=flat-square" alt="Security" />
   <img src="https://img.shields.io/badge/🐳_Docker-One_Command_Deploy-purple?style=flat-square" alt="Docker" />
   <img src="https://img.shields.io/badge/☸️_Kubernetes-CRI_Compatible-cyan?style=flat-square" alt="Kubernetes" />
   <br/>
