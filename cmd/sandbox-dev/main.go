@@ -1,10 +1,3 @@
-/*
-Copyright 2024 NexusBox Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-*/
-
 package main
 
 import (
@@ -24,20 +17,24 @@ import (
 	"github.com/nexusbox/nexusbox/pkg/apis/sandbox/v1alpha1"
 	"github.com/nexusbox/nexusbox/pkg/gateway"
 	"github.com/nexusbox/nexusbox/pkg/mcp"
+	"github.com/nexusbox/nexusbox/pkg/network/ebpf"
+	"github.com/nexusbox/nexusbox/pkg/network/egress"
 	"github.com/nexusbox/nexusbox/pkg/proxy"
 	"github.com/nexusbox/nexusbox/pkg/sandbox/lifecycle"
 	sandboxRuntime "github.com/nexusbox/nexusbox/pkg/sandbox/runtime"
+	"github.com/nexusbox/nexusbox/pkg/template"
 	"github.com/nexusbox/nexusbox/pkg/tenant"
 	"github.com/nexusbox/nexusbox/pkg/tenant/quota"
 )
 
 func main() {
 	var (
-		port      = flag.Int("port", 8080, "Gateway HTTP server port")
-		mcpPort   = flag.Int("mcp-port", 8079, "MCP Hub HTTP server port")
-		proxyPort = flag.Int("proxy-port", 6081, "Port proxy server port")
-		workspace = flag.String("workspace", "", "Workspace directory (default: current dir)")
-		logLevel  = flag.String("log-level", "info", "Log level (debug|info|warn|error)")
+		port       = flag.Int("port", 8080, "Gateway HTTP server port")
+		mcpPort    = flag.Int("mcp-port", 8079, "MCP Hub HTTP server port")
+		proxyPort  = flag.Int("proxy-port", 6081, "Port proxy server port")
+		workspace  = flag.String("workspace", "", "Workspace directory (default: current dir)")
+		logLevel   = flag.String("log-level", "info", "Log level (debug|info|warn|error)")
+		egressPort = flag.Int("egress-port", 8082, "Egress gateway port (0=disabled)")
 	)
 	klog.InitFlags(nil)
 	flag.Parse()
@@ -98,6 +95,22 @@ func main() {
 	tenantManager := tenant.NewTenantManager(quotaManager, nil, nil)
 	lifecycleManager := lifecycle.NewLifecycleManager(runtimeManager, tenantManager, nil, nil)
 
+	// Initialize template manager and seed defaults
+	templateMgr := template.NewManager()
+	if err := templateMgr.SeedDefaults(context.Background()); err != nil {
+		klog.Warningf("Failed to seed default templates: %v", err)
+	} else {
+		klog.Info("Default templates seeded")
+	}
+
+	// Initialize eBPF network policy engine
+	netPolicyEngine := ebpf.NewEngine(&ebpf.EngineConfig{})
+	if err := netPolicyEngine.Init(); err != nil {
+		klog.Warningf("Failed to init network policy engine: %v", err)
+	} else {
+		klog.Infof("Network policy engine initialized (backend=%s)", netPolicyEngine.GetStats().Backend)
+	}
+
 	// Register default tenant
 	defaultTenant := &v1alpha1.Tenant{
 		ObjectMeta: metav1.ObjectMeta{Name: "default"},
@@ -136,9 +149,19 @@ func main() {
 		QuotaManager:     quotaManager,
 		LifecycleManager: lifecycleManager,
 		Workspace:        ws,
+		TemplateManager:  templateMgr,
 	}
 	gw := gateway.NewGateway(gatewayConfig)
 	klog.Infof("Gateway created on port %d", *port)
+
+	// Create Egress Gateway (optional)
+	var egressGW *egress.Gateway
+	if *egressPort > 0 {
+		egressGW = egress.NewGateway(&egress.GatewayConfig{
+			ListenAddr: fmt.Sprintf(":%d", *egressPort),
+		})
+		klog.Infof("Egress gateway created on port %d", *egressPort)
+	}
 
 	// Create MCP Hub (automatically registers shell, file, code, browser servers)
 	mcpHub := mcp.NewHub(&mcp.HubConfig{Port: *mcpPort, Workspace: *workspace})
@@ -174,6 +197,18 @@ func main() {
 	}
 	klog.Info("Port Proxy started")
 
+	// Start Egress Gateway
+	if egressGW != nil {
+		if err := egressGW.Start(ctx); err != nil {
+			klog.Fatalf("Failed to start Egress Gateway: %v", err)
+		}
+		klog.Info("Egress Gateway started")
+	}
+
+	// Start Network Policy Engine
+	netPolicyEngine.Start(ctx)
+	klog.Info("Network Policy Engine started")
+
 	fmt.Println("")
 
 	// --- Service Summary ---
@@ -184,6 +219,9 @@ func main() {
 	fmt.Printf("  Health Check:  http://localhost:%d/healthz\n", *port)
 	fmt.Printf("  MCP Endpoint:  http://localhost:%d/mcp\n", *mcpPort)
 	fmt.Printf("  Port Proxy:    http://localhost:%d/proxy/\n", *proxyPort)
+	if egressGW != nil {
+		fmt.Printf("  Egress GW:     http://localhost:%d/v1/egress/stats\n", *egressPort)
+	}
 	fmt.Printf("  Workspace:     %s\n", ws)
 	fmt.Println("")
 	fmt.Println("  API Endpoints:")
@@ -196,6 +234,9 @@ func main() {
 	fmt.Println("    POST /v1/browser/screenshot - Take screenshot")
 	fmt.Println("    POST /v1/code/execute       - Execute code")
 	fmt.Println("    GET  /v1/system/env         - System environment")
+	fmt.Println("    GET  /v1/templates           - List sandbox templates")
+	fmt.Println("    POST /e2b/v1/sandboxes      - E2B SDK: create sandbox")
+	fmt.Println("    GET  /e2b/v1/health         - E2B SDK: health check")
 	fmt.Println("")
 	fmt.Println("  Press Ctrl+C to stop")
 	fmt.Println("============================================================")
@@ -221,6 +262,10 @@ func main() {
 
 	gw.Shutdown()
 	portProxy.Shutdown()
+	if egressGW != nil {
+		egressGW.Stop()
+	}
+	netPolicyEngine.Stop()
 	_ = shutdownCtx
 
 	klog.Info("All services stopped. Goodbye!")
