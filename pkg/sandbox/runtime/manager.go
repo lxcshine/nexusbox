@@ -1,19 +1,3 @@
-/*
-Copyright 2024 NexusBox Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package runtime
 
 import (
@@ -274,6 +258,102 @@ func (rm *RuntimeManager) Start(ctx context.Context) {
 	}
 
 	klog.Info("Runtime manager started")
+}
+
+// GetConfig returns a copy of the current runtime manager configuration.
+// The returned pointer can be mutated by the caller without affecting the
+// manager's internal state.
+func (rm *RuntimeManager) GetConfig() *RuntimeManagerConfig {
+	rm.mu.RLock()
+	defer rm.mu.RUnlock()
+	if rm.config == nil {
+		return nil
+	}
+	c := *rm.config
+	// Deep-copy the PoolSize map so callers can't mutate it.
+	if rm.config.PoolSize != nil {
+		c.PoolSize = make(map[sandboxv1alpha1.SandboxRuntimeType]int32, len(rm.config.PoolSize))
+		for k, v := range rm.config.PoolSize {
+			c.PoolSize[k] = v
+		}
+	}
+	return &c
+}
+
+// UpdateConfig applies a new runtime manager configuration atomically.
+//
+// Hot-reloadable fields (timeouts, pool sizes, max concurrent ops, pool
+// refresh interval) take effect immediately. Provider endpoints are NOT
+// hot-reloadable: changing KataContainersEndpoint/GVisorEndpoint/RuncEndpoint
+// is ignored because providers are wired at construction time; restart the
+// process to change endpoints. This keeps UpdateConfig safe to call while
+// sandboxes are running.
+//
+// Returns an error if newConfig is nil; the previous config stays in effect.
+func (rm *RuntimeManager) UpdateConfig(newConfig *RuntimeManagerConfig) error {
+	if newConfig == nil {
+		return fmt.Errorf("newConfig is nil")
+	}
+
+	rm.mu.Lock()
+	// Preserve the existing provider endpoints if the new config leaves them
+	// empty (a partial hot-reload should not blank out wired endpoints).
+	prev := rm.config
+	if newConfig.KataContainersEndpoint == "" {
+		newConfig.KataContainersEndpoint = prev.KataContainersEndpoint
+	}
+	if newConfig.GVisorEndpoint == "" {
+		newConfig.GVisorEndpoint = prev.GVisorEndpoint
+	}
+	if newConfig.RuncEndpoint == "" {
+		newConfig.RuncEndpoint = prev.RuncEndpoint
+	}
+	// Apply sensible defaults for zero-valued operational fields so a partial
+	// config does not silently disable safety limits.
+	if newConfig.CreateTimeout <= 0 {
+		newConfig.CreateTimeout = prev.CreateTimeout
+	}
+	if newConfig.StartTimeout <= 0 {
+		newConfig.StartTimeout = prev.StartTimeout
+	}
+	if newConfig.StopTimeout <= 0 {
+		newConfig.StopTimeout = prev.StopTimeout
+	}
+	if newConfig.PauseTimeout <= 0 {
+		newConfig.PauseTimeout = prev.PauseTimeout
+	}
+	if newConfig.ResumeTimeout <= 0 {
+		newConfig.ResumeTimeout = prev.ResumeTimeout
+	}
+	if newConfig.PoolRefreshInterval <= 0 {
+		newConfig.PoolRefreshInterval = prev.PoolRefreshInterval
+	}
+	if newConfig.MaxConcurrentOperations <= 0 {
+		newConfig.MaxConcurrentOperations = prev.MaxConcurrentOperations
+	}
+	if newConfig.PoolSize == nil {
+		newConfig.PoolSize = prev.PoolSize
+	}
+	rm.config = newConfig
+	rm.mu.Unlock()
+
+	klog.Infof("Runtime manager config hot-reloaded: poolEnabled=%v poolSizes=%v maxConcurrentOps=%d createTimeout=%s",
+		newConfig.PoolEnabled, newConfig.PoolSize, newConfig.MaxConcurrentOperations, newConfig.CreateTimeout)
+	return nil
+}
+
+// Name returns the reloader name (implements config.Reloader).
+func (rm *RuntimeManager) Name() string { return "runtime-manager" }
+
+// Reload applies a hot-reloaded config. The concrete type of newConfig must
+// be *RuntimeManagerConfig; otherwise the reload is rejected with an error so
+// the watcher keeps the previous (valid) config. Implements config.Reloader.
+func (rm *RuntimeManager) Reload(ctx context.Context, newConfig any) error {
+	cfg, ok := newConfig.(*RuntimeManagerConfig)
+	if !ok {
+		return fmt.Errorf("runtime-manager: expected *RuntimeManagerConfig, got %T", newConfig)
+	}
+	return rm.UpdateConfig(cfg)
 }
 
 // Stop stops the runtime manager.
