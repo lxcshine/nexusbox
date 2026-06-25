@@ -1,3 +1,5 @@
+
+
 package migration
 
 import (
@@ -96,7 +98,9 @@ func (mm *MigrationManager) MigrateSandbox(ctx context.Context, sandboxID string
 	// Step 4: Restore on target node
 	mm.updatePhase(sandboxID, MigrationPhaseRestore)
 	targetSandboxID := sandboxID // Same ID on target
-	if err := mm.snapshot.RestoreSnapshot(ctx, snapshotID, targetSandboxID); err != nil {
+	// targetPath is empty so RestoreSnapshot reuses the source path recorded
+	// in the snapshot metadata (the sandbox's working directory).
+	if err := mm.snapshot.RestoreSnapshot(ctx, snapshotID, targetSandboxID, ""); err != nil {
 		return mm.failMigration(sandboxID, fmt.Sprintf("restore failed: %v", err))
 	}
 
