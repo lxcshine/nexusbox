@@ -1,10 +1,3 @@
-/*
-Copyright 2024 NexusBox Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-*/
-
 package gateway
 
 import (
@@ -323,6 +316,43 @@ func (s *ShellService) Exec(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// ExecSync executes a command synchronously and returns the result.
+// This is used by the E2B compatibility layer and other internal callers
+// that need direct access to command execution without HTTP overhead.
+func (s *ShellService) ExecSync(command string, timeoutSec int32) (stdout, stderr string, exitCode int, err error) {
+	ctx := context.Background()
+	if timeoutSec > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(timeoutSec)*time.Second)
+		defer cancel()
+	}
+
+	shell, shellArgs := defaultShell()
+	cmd := exec.CommandContext(ctx, shell, append(shellArgs, command)...)
+	cmd.Env = os.Environ()
+
+	var stdoutBuf, stderrBuf strings.Builder
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
+
+	err = cmd.Run()
+	stdout = stdoutBuf.String()
+	stderr = stderrBuf.String()
+
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			exitCode = -1
+			stderr = "command timed out"
+		} else if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			exitCode = -1
+			stderr = err.Error()
+		}
+	}
+	return
 }
 
 // BashExec handles bash-specific command execution with session support.
