@@ -293,6 +293,33 @@ docker-compose -f deploy/docker/docker-compose.yaml down
 docker-compose -f deploy/docker/docker-compose.yaml down -v
 ```
 
+### MCP 可用性检测（stdio 传输）
+
+两个 PowerShell 脚本以与 Trae 完全相同的方式驱动 `nexusbox-mcp.exe` 二进制——通过 stdio JSON-RPC 2.0 传输——并端到端断言每个工具类别都能正常工作。每次构建后运行它们，可尽早发现回归。
+
+**前置条件：** 先编译二进制。
+```bash
+go build -o nexusbox-mcp.exe ./cmd/nexusbox-mcp
+```
+
+**1. 握手 + tools/list** —— 验证 MCP initialize 握手成功，并枚举出全部 18 个工具。
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\check_mcp_availability.ps1
+```
+预期输出：`PASS: 6`（服务器名称、工具数 == 18，以及 5 个代表性工具齐全）。
+
+**2. 工具调用端到端** —— 执行 `shell_exec`、`file_write`+`file_read`、跨 Python/Node/Go/Java 的 `code_run`，以及路径遍历防护。
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\check_mcp_tools.ps1
+```
+预期输出：`PASS: 9   FAIL: 0`。
+
+> 两个脚本都会自动以 `-workspace D:\Code\NexusBox` 启动 `nexusbox-mcp.exe`，发送真实的 JSON-RPC 请求，并在退出时关闭进程。无需 Docker。
+
+**可视化测试报告** —— 汇总最近一次运行结果：
+
+![查看最新报告](result.png)
+
 ---
 
 ## MCP 工具
