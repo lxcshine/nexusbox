@@ -85,6 +85,57 @@ Unlike simple demo sandboxes that only support `curl` or `docker exec`, NexusBox
 
 ---
 
+## Architecture
+
+NexusBox follows a **layered architecture** that flows top-down from the AI agent to the isolated sandbox workspace. Each layer has a single responsibility and exposes a narrow interface to the layer below, so components can evolve independently.
+
+![NexusBox Architecture](architecture.png)
+
+### Layer Walkthrough
+
+| # | Layer | Key Components | Responsibility |
+|---|-------|----------------|----------------|
+| 1 | **Client** | AI Agent (Trae / Claude / Cursor) | Issues JSON-RPC 2.0 tool calls |
+| 2 | **Protocol & API** | MCP Hub `:8079`, Gateway REST API `:8080` | Dual entry: MCP for AI agents (18 tools), REST for SDKs and dashboards |
+| 3 | **Orchestration** | Lifecycle Manager, Scheduler, Tenant Manager, Template Manager | State-machine lifecycle, 11-phase scheduling, multi-tenant quota & isolation, sandbox templates |
+| 4 | **Runtime & Isolation** | Runtime Manager (kata / gvisor / runc / Job Object), Security Manager, Workspace Manager, Snapshot Manager, Multi-language Runtime (Python / Node / Go / Java) | Spins up isolated runtimes, applies seccomp & path guards, confines each project to its workspace, snapshots state, executes code in four languages |
+| 5 | **Sandbox Workspace** | Per-session isolated filesystem | The actual execution environment the AI agent operates in |
+
+Cross-cutting concerns — **networking** (CNI, eBPF, Egress Gateway `:8082`, Port Proxy `:6081`), **storage** (etcd, Volume, Image, GPU), **observability** (Prometheus, tracing, audit, health), and **control plane** (hot-reload config, HA leader election, snapshot-based migration, CRD controller, CRI server) — run alongside all five layers.
+
+### Request Flow
+
+```
+AI Agent ──JSON-RPC──▶ MCP Hub ──delegates──▶ Gateway REST API
+                                              │
+                                              ▼
+                          Lifecycle Manager ──▶ Scheduler ──▶ Tenant/Template
+                                              │
+                                              ▼
+                          Runtime Manager ──▶ Security + Workspace + Snapshot
+                                              │
+                                              ▼
+                              Isolated Sandbox Workspace
+                          (Python / Node / Go / Java execution)
+```
+
+1. The AI agent sends a JSON-RPC 2.0 request to the MCP Hub (`:8079`).
+2. The MCP Hub routes the call to the appropriate tool server (Shell / File / Code / Browser), which delegates to the Gateway REST API (`:8080`).
+3. The Gateway authenticates the request, then forwards sandbox-affecting operations to the Lifecycle Manager.
+4. The Lifecycle Manager drives the sandbox through its state machine and, for new sandboxes, cooperates with the Scheduler (11-phase pipeline) and Tenant Manager (quota / isolation enforcement).
+5. The Runtime Manager creates an isolated runtime (kata / gvisor / runc / Job Object); the Security Manager applies seccomp, AppArmor, and cgroup limits; the Workspace Manager confines every file path to the session's root.
+6. The request executes inside the isolated sandbox workspace, where the multi-language runtime runs Python / Node / Go / Java code.
+7. Results flow back up the same path; the Egress Gateway audits any outbound network calls; observability components record metrics, traces, and audit logs throughout.
+
+### Why Layered?
+
+- **Isolation by construction** — A request cannot reach the host without passing through Security Manager (seccomp / path guard) and Workspace Manager (path confinement), so an AI agent bound to workspace A can never read workspace B's files.
+- **Pluggable runtimes** — The Runtime Manager abstracts kata / gvisor / runc / Job Object behind a single `RuntimeProvider` interface, so the same orchestration code runs on Linux strong-isolation clusters and Windows developer laptops.
+- **Snapshots without restart** — The Snapshot Manager (VSS on Windows, filesystem elsewhere) lets a corrupted workspace "return to the last good state" without restarting the service.
+- **Hot-reloadable config** — The control-plane watcher applies new configuration to the Runtime Manager at runtime; empty fields are inherited from defaults, so partial updates are safe.
+
+---
+
 ## Quick Start
 
 ### Option 1: Native Binary (Fast, No Docker)
