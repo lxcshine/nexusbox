@@ -1,3 +1,9 @@
+/*
+Copyright 2024 NexusBox Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+*/
+
 package mcp
 
 import (
@@ -7,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"time"
 )
@@ -31,11 +38,11 @@ func (s *CodeMCPServer) ListTools(ctx context.Context) ([]Tool, error) {
 	return []Tool{
 		{
 			Name:        "code_run",
-			Description: "Execute Python or Node.js code in the sandbox. The code is written to a temp file and executed. Returns stdout, stderr, and exit code. Use this for running scripts, testing code, data analysis, etc.",
+			Description: "Execute Python, Node.js, Go, or Java code in the sandbox. The code is written to a temp file and executed. Returns stdout, stderr, and exit code. Use this for running scripts, testing code, data analysis, etc.",
 			InputSchema: InputSchema{
 				Type: "object",
 				Properties: map[string]PropertyDef{
-					"language": {Type: "string", Description: "Programming language", Enum: []string{"python", "nodejs"}},
+					"language": {Type: "string", Description: "Programming language", Enum: []string{"python", "nodejs", "go", "java"}},
 					"code":     {Type: "string", Description: "The source code to execute"},
 					"timeout":  {Type: "integer", Description: "Timeout in seconds (default 30, max 120)", Default: 30},
 				},
@@ -86,14 +93,16 @@ func (s *CodeMCPServer) runCode(ctx context.Context, arguments map[string]interf
 	}
 
 	// Write code to a temp file
-	var ext, runner string
+	var ext, fileName string
 	switch language {
 	case "python", "py":
 		ext = ".py"
-		runner = "python3"
 	case "nodejs", "node", "js":
 		ext = ".js"
-		runner = "node"
+	case "go", "golang":
+		ext = ".go"
+	case "java":
+		ext = ".java"
 	default:
 		return &CallToolResult{
 			Content: []ContentBlock{{Type: "text", Text: fmt.Sprintf("Unsupported language: %s", language)}},
@@ -101,13 +110,24 @@ func (s *CodeMCPServer) runCode(ctx context.Context, arguments map[string]interf
 		}, nil
 	}
 
-	tmpFile := filepath.Join(s.workspace, ".nexusbox-tmp", fmt.Sprintf("exec-%d%s", time.Now().UnixNano(), ext))
-	if err := os.MkdirAll(filepath.Dir(tmpFile), 0755); err != nil {
+	tmpDir := filepath.Join(s.workspace, ".nexusbox-tmp")
+	if err := os.MkdirAll(tmpDir, 0755); err != nil {
 		return &CallToolResult{
 			Content: []ContentBlock{{Type: "text", Text: fmt.Sprintf("Failed to create temp dir: %v", err)}},
 			IsError: true,
 		}, nil
 	}
+
+	// Java requires the file name to match the public class name. Normalize
+	// to Main.java and rewrite the public class declaration so compilation
+	// always succeeds regardless of what the caller named the class.
+	if language == "java" {
+		fileName = "Main.java"
+		code = normalizeJavaClassName(code)
+	} else {
+		fileName = fmt.Sprintf("exec-%d%s", time.Now().UnixNano(), ext)
+	}
+	tmpFile := filepath.Join(tmpDir, fileName)
 	defer os.Remove(tmpFile)
 
 	if err := os.WriteFile(tmpFile, []byte(code), 0644); err != nil {
@@ -121,10 +141,30 @@ func (s *CodeMCPServer) runCode(ctx context.Context, arguments map[string]interf
 	defer cancel()
 
 	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(execCtx, runner, tmpFile)
-	} else {
-		cmd = exec.CommandContext(execCtx, runner, tmpFile)
+	switch language {
+	case "python", "py":
+		cmd = exec.CommandContext(execCtx, pythonExecutable(), tmpFile)
+	case "nodejs", "node", "js":
+		cmd = exec.CommandContext(execCtx, nodeExecutable(), tmpFile)
+	case "go", "golang":
+		cmd = exec.CommandContext(execCtx, "go", "run", tmpFile)
+	case "java":
+		// Two-step: compile then run. Run javac synchronously first.
+		compileCmd := exec.CommandContext(execCtx, "javac", tmpFile)
+		compileCmd.Dir = tmpDir
+		var cstdout, cstderr bytes.Buffer
+		compileCmd.Stdout = &cstdout
+		compileCmd.Stderr = &cstderr
+		if cerr := compileCmd.Run(); cerr != nil {
+			return &CallToolResult{
+				Content: []ContentBlock{{Type: "text", Text: fmt.Sprintf("javac failed: %v\n--- stdout ---\n%s\n--- stderr ---\n%s", cerr, cstdout.String(), cstderr.String())}},
+				IsError: true,
+			}, nil
+		}
+		defer os.Remove(filepath.Join(tmpDir, "Main.class"))
+		cmd = exec.CommandContext(execCtx, "java", "-cp", tmpDir, "Main")
+	default:
+		cmd = exec.CommandContext(execCtx, "python3", tmpFile)
 	}
 	cmd.Dir = s.workspace
 
@@ -210,4 +250,31 @@ func (s *CodeMCPServer) installPackage(ctx context.Context, arguments map[string
 		},
 		IsError: exitCode != 0,
 	}, nil
+}
+
+// pythonExecutable returns the Python interpreter name resolvable on PATH.
+// Windows typically only has "python"; POSIX systems use "python3".
+func pythonExecutable() string {
+	if runtime.GOOS == "windows" {
+		if _, err := exec.LookPath("python3"); err == nil {
+			return "python3"
+		}
+		return "python"
+	}
+	return "python3"
+}
+
+// nodeExecutable returns the Node.js interpreter name.
+func nodeExecutable() string {
+	return "node"
+}
+
+// javaPublicClassRe matches a top-level `public class <Name>` declaration.
+var javaPublicClassRe = regexp.MustCompile(`(?m)public\s+class\s+\w+`)
+
+// normalizeJavaClassName rewrites the public class declaration to "Main"
+// so the source can always be saved as Main.java and compiled. Non-public
+// classes are left untouched (they do not need to match the file name).
+func normalizeJavaClassName(src string) string {
+	return javaPublicClassRe.ReplaceAllString(src, "public class Main")
 }
