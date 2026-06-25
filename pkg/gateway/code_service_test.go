@@ -1,10 +1,3 @@
-/*
-Copyright 2024 NexusBox Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-*/
-
 package gateway
 
 import (
@@ -37,13 +30,15 @@ func TestCodeInfo(t *testing.T) {
 		t.Fatalf("failed to decode: %v", err)
 	}
 
-	if len(resp.Languages) != 2 {
-		t.Fatalf("expected 2 languages, got %d", len(resp.Languages))
+	if len(resp.Languages) != 4 {
+		t.Fatalf("expected 4 languages, got %d", len(resp.Languages))
 	}
 
-	// Check Python entry
+	// Check entries
 	pyFound := false
 	nodeFound := false
+	goFound := false
+	javaFound := false
 	for _, lang := range resp.Languages {
 		if lang.Language == "python" {
 			pyFound = true
@@ -51,12 +46,24 @@ func TestCodeInfo(t *testing.T) {
 		if lang.Language == "nodejs" {
 			nodeFound = true
 		}
+		if lang.Language == "go" {
+			goFound = true
+		}
+		if lang.Language == "java" {
+			javaFound = true
+		}
 	}
 	if !pyFound {
 		t.Error("python language not found in info")
 	}
 	if !nodeFound {
 		t.Error("nodejs language not found in info")
+	}
+	if !goFound {
+		t.Error("go language not found in info")
+	}
+	if !javaFound {
+		t.Error("java language not found in info")
 	}
 }
 
@@ -227,6 +234,138 @@ func TestCodeExecute_LanguageAliases(t *testing.T) {
 		if w.Code != http.StatusOK {
 			t.Errorf("language alias '%s': expected 200, got %d", alias, w.Code)
 		}
+	}
+}
+
+// --- Code Execute: Go ---
+
+func TestCodeExecute_Go(t *testing.T) {
+	svc := newTestCodeService()
+
+	if svc.goPath == "" {
+		t.Skip("go not available on this system")
+	}
+
+	body := `{"language":"go","code":"package main\nimport \"fmt\"\nfunc main() { fmt.Println(\"hello from go\") }"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	svc.Execute(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("execute go: expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	var resp CodeExecuteResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode: %v", err)
+	}
+
+	if resp.ExitCode != 0 {
+		t.Errorf("expected exitCode=0, got %d (stderr=%s)", resp.ExitCode, resp.Stderr)
+	}
+	if !strings.Contains(resp.Stdout, "hello from go") {
+		t.Errorf("expected stdout to contain 'hello from go', got '%s'", resp.Stdout)
+	}
+	if resp.Runtime != "go" {
+		t.Errorf("expected runtime=go, got %s", resp.Runtime)
+	}
+}
+
+// TestCodeExecute_GoWithoutPackage verifies the service wraps bare code with
+// `package main` so callers can submit a main() body without ceremony.
+func TestCodeExecute_GoWithoutPackage(t *testing.T) {
+	svc := newTestCodeService()
+	if svc.goPath == "" {
+		t.Skip("go not available on this system")
+	}
+
+	body := `{"language":"go","code":"func main() { println(42) }"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	svc.Execute(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("execute go: expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+	var resp CodeExecuteResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp.ExitCode != 0 {
+		t.Errorf("expected exitCode=0, got %d (stderr=%s)", resp.ExitCode, resp.Stderr)
+	}
+}
+
+func TestCodeExecute_GoAlias(t *testing.T) {
+	svc := newTestCodeService()
+	if svc.goPath == "" {
+		t.Skip("go not available on this system")
+	}
+	body := `{"language":"golang","code":"package main\nfunc main() {}"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	svc.Execute(w, req)
+	if w.Code != http.StatusOK {
+		t.Errorf("alias golang: expected 200, got %d", w.Code)
+	}
+}
+
+// --- Code Execute: Java ---
+
+func TestCodeExecute_Java(t *testing.T) {
+	svc := newTestCodeService()
+	if svc.javaPath == "" || svc.javacPath == "" {
+		t.Skip("java/javac not available on this system")
+	}
+
+	body := `{"language":"java","code":"public class Main { public static void main(String[] args) { System.out.println(\"hello from java\"); } }"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	svc.Execute(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("execute java: expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+
+	var resp CodeExecuteResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode: %v", err)
+	}
+
+	if resp.ExitCode != 0 {
+		t.Errorf("expected exitCode=0, got %d (stderr=%s)", resp.ExitCode, resp.Stderr)
+	}
+	if !strings.Contains(resp.Stdout, "hello from java") {
+		t.Errorf("expected stdout to contain 'hello from java', got '%s'", resp.Stdout)
+	}
+	if resp.Runtime != "java" {
+		t.Errorf("expected runtime=java, got %s", resp.Runtime)
+	}
+}
+
+// TestCodeExecute_JavaClassRename verifies that a public class with a
+// different name gets rewritten to Main so the file name (Main.java) matches.
+func TestCodeExecute_JavaClassRename(t *testing.T) {
+	svc := newTestCodeService()
+	if svc.javaPath == "" || svc.javacPath == "" {
+		t.Skip("java/javac not available on this system")
+	}
+
+	body := `{"language":"java","code":"public class HelloWorld { public static void main(String[] args) { System.out.println(123); } }"}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/code/execute", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	svc.Execute(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("execute java: expected 200, got %d; body: %s", w.Code, w.Body.String())
+	}
+	var resp CodeExecuteResponse
+	json.NewDecoder(w.Body).Decode(&resp)
+	if resp.ExitCode != 0 {
+		t.Errorf("expected exitCode=0, got %d (stderr=%s)", resp.ExitCode, resp.Stderr)
 	}
 }
 
