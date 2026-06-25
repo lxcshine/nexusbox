@@ -1,10 +1,3 @@
-/*
-Copyright 2024 NexusBox Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-*/
-
 package mcp
 
 import (
@@ -225,26 +218,7 @@ func (h *Hub) handleMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var result interface{}
-	var rpcErr *JSONRPCError
-
-	switch msg.Method {
-	case "initialize":
-		result = h.handleInitialize(r.Context())
-	case "tools/list":
-		result = h.handleToolsList(r.Context(), msg)
-	case "tools/call":
-		result, rpcErr = h.handleToolsCall(r.Context(), msg)
-	case "resources/list":
-		result = map[string]interface{}{"resources": []interface{}{}}
-	case "prompts/list":
-		result = map[string]interface{}{"prompts": []interface{}{}}
-	case "ping":
-		result = map[string]interface{}{}
-	default:
-		writeMCPError(w, msg.ID, -32601, fmt.Sprintf("Method not found: %s", msg.Method))
-		return
-	}
+	result, rpcErr := h.dispatch(r.Context(), &msg)
 
 	if rpcErr != nil {
 		writeMCPError(w, msg.ID, rpcErr.Code, rpcErr.Message)
@@ -260,6 +234,27 @@ func (h *Hub) handleMCP(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// dispatch routes a JSON-RPC message to the appropriate handler.
+// Shared by HTTP and stdio transports.
+func (h *Hub) dispatch(ctx context.Context, msg *JSONRPCMessage) (interface{}, *JSONRPCError) {
+	switch msg.Method {
+	case "initialize":
+		return h.handleInitialize(ctx), nil
+	case "tools/list":
+		return h.handleToolsList(ctx, *msg), nil
+	case "tools/call":
+		return h.handleToolsCall(ctx, *msg)
+	case "resources/list":
+		return map[string]interface{}{"resources": []interface{}{}}, nil
+	case "prompts/list":
+		return map[string]interface{}{"prompts": []interface{}{}}, nil
+	case "ping":
+		return map[string]interface{}{}, nil
+	default:
+		return nil, &JSONRPCError{Code: -32601, Message: fmt.Sprintf("Method not found: %s", msg.Method)}
+	}
 }
 
 // handleInitialize handles the MCP initialize request.
