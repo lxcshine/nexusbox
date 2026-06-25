@@ -1,10 +1,3 @@
-/*
-Copyright 2024 NexusBox Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-*/
-
 // Package cri implements a CRI-compatible gRPC shim that allows Kubernetes
 // (kubelet) to use NexusBox as a container runtime.
 //
