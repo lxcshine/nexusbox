@@ -321,7 +321,7 @@ Expected: `PASS: 9   FAIL: 0`.
 python scripts/generate_test_report.py
 # open docs/test-report.html in any browser
 ```
-[View latest report](docs/test-report.html)
+[View latest report](result.png)
 
 ---
 
