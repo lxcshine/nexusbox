@@ -39,8 +39,8 @@
   <a href="docs/quick-start-guide_zh.md">快速启动指南 (中文)</a>
   <a href="docs/testing.md">Testing Guide (EN)</a> &bull;
   <a href="docs/testing_zh.md">测试指南 (中文)</a>
-  <a href="docs/phase2-integration-test.md">Phase 2 Integration Test Guide (EN)</a> &bull;
-  <a href="docs/phase2-integration-test_zh.md">Phase 2 集成测试指南 (中文)</a>
+  <a href="docs/phase2-integration-test.md">Integration Test Guide (EN)</a> &bull;
+  <a href="docs/phase2-integration-test_zh.md">集成测试指南 (中文)</a>
 </p>
 
 ---
