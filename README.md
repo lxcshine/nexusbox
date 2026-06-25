@@ -103,30 +103,6 @@ NexusBox follows a **layered architecture** that flows top-down from the AI agen
 
 Cross-cutting concerns — **networking** (CNI, eBPF, Egress Gateway `:8082`, Port Proxy `:6081`), **storage** (etcd, Volume, Image, GPU), **observability** (Prometheus, tracing, audit, health), and **control plane** (hot-reload config, HA leader election, snapshot-based migration, CRD controller, CRI server) — run alongside all five layers.
 
-### Request Flow
-
-```
-AI Agent ──JSON-RPC──▶ MCP Hub ──delegates──▶ Gateway REST API
-                                              │
-                                              ▼
-                          Lifecycle Manager ──▶ Scheduler ──▶ Tenant/Template
-                                              │
-                                              ▼
-                          Runtime Manager ──▶ Security + Workspace + Snapshot
-                                              │
-                                              ▼
-                              Isolated Sandbox Workspace
-                          (Python / Node / Go / Java execution)
-```
-
-1. The AI agent sends a JSON-RPC 2.0 request to the MCP Hub (`:8079`).
-2. The MCP Hub routes the call to the appropriate tool server (Shell / File / Code / Browser), which delegates to the Gateway REST API (`:8080`).
-3. The Gateway authenticates the request, then forwards sandbox-affecting operations to the Lifecycle Manager.
-4. The Lifecycle Manager drives the sandbox through its state machine and, for new sandboxes, cooperates with the Scheduler (11-phase pipeline) and Tenant Manager (quota / isolation enforcement).
-5. The Runtime Manager creates an isolated runtime (kata / gvisor / runc / Job Object); the Security Manager applies seccomp, AppArmor, and cgroup limits; the Workspace Manager confines every file path to the session's root.
-6. The request executes inside the isolated sandbox workspace, where the multi-language runtime runs Python / Node / Go / Java code.
-7. Results flow back up the same path; the Egress Gateway audits any outbound network calls; observability components record metrics, traces, and audit logs throughout.
-
 ### Why Layered?
 
 - **Isolation by construction** — A request cannot reach the host without passing through Security Manager (seccomp / path guard) and Workspace Manager (path confinement), so an AI agent bound to workspace A can never read workspace B's files.
