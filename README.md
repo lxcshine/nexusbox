@@ -293,6 +293,36 @@ docker-compose -f deploy/docker/docker-compose.yaml down
 docker-compose -f deploy/docker/docker-compose.yaml down -v
 ```
 
+### MCP Availability Checks (stdio transport)
+
+Two PowerShell scripts drive the `nexusbox-mcp.exe` binary the same way Trae does — over the stdio JSON-RPC 2.0 transport — and assert every tool category works end-to-end. Run them after every build to catch regressions early.
+
+**Prerequisite:** build the binary first.
+```bash
+go build -o nexusbox-mcp.exe ./cmd/nexusbox-mcp
+```
+
+**1. Handshake + tools/list** — verifies the MCP initialize handshake succeeds and all 18 tools are enumerated.
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\check_mcp_availability.ps1
+```
+Expected: `PASS: 6` (server name, tool count == 18, and 5 representative tools present).
+
+**2. Tool-call e2e** — exercises `shell_exec`, `file_write`+`file_read`, `code_run` across Python/Node/Go/Java, and the path-traversal guard.
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\check_mcp_tools.ps1
+```
+Expected: `PASS: 9   FAIL: 0`.
+
+> Both scripts auto-launch `nexusbox-mcp.exe` with `-workspace D:\Code\NexusBox`, send real JSON-RPC requests, and tear the process down on exit. No Docker required.
+
+**Visual test report** — regenerate a self-contained HTML report (inline SVG charts, no external deps) summarizing the latest run:
+```bash
+python scripts/generate_test_report.py
+# open docs/test-report.html in any browser
+```
+[View latest report](docs/test-report.html)
+
 ---
 
 ## MCP Tools
