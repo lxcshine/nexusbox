@@ -316,11 +316,8 @@ Expected: `PASS: 9   FAIL: 0`.
 
 > Both scripts auto-launch `nexusbox-mcp.exe` with `-workspace D:\Code\NexusBox`, send real JSON-RPC requests, and tear the process down on exit. No Docker required.
 
-**Visual test report** — regenerate a self-contained HTML report (inline SVG charts, no external deps) summarizing the latest run:
-```bash
-python scripts/generate_test_report.py
-# open docs/test-report.html in any browser
-```
+**Visual test report** — Summarizing the latest run:
+
 ![View latest report](result.png)
 
 ---
