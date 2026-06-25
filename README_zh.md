@@ -85,6 +85,33 @@ NexusBox 是一款**能在本地主机运行的沙箱平台**，专为 AI Agent 
 
 ---
 
+## 系统架构
+
+NexusBox 采用**分层架构**，请求自上而下从 AI Agent 流向隔离的沙箱工作区。每一层职责单一，只对下层暴露窄接口，组件可独立演进。
+
+![NexusBox 架构图](architecture.png)
+
+### 分层概览
+
+| 编号 | 层 | 核心组件 | 职责 |
+|------|----|----|------|
+| 1 | **客户端** | AI Agent（Trae / Claude / Cursor） | 发起 JSON-RPC 2.0 工具调用 |
+| 2 | **协议与 API** | MCP Hub `:8079`、Gateway REST API `:8080` | 双入口：MCP 面向 AI Agent（18 个工具），REST 面向 SDK 和控制台 |
+| 3 | **编排层** | Lifecycle Manager、Scheduler、Tenant Manager、Template Manager | 生命周期状态机、11 阶段调度、多租户配额与隔离、沙箱模板 |
+| 4 | **运行时与隔离** | Runtime Manager（kata / gvisor / runc / Job Object）、Security Manager、Workspace Manager、Snapshot Manager、多语言运行时（Python / Node / Go / Java） | 创建隔离运行时、应用 seccomp 与路径防护、将每个项目限制在其工作区、快照状态、执行四种语言代码 |
+| 5 | **沙箱工作区** | 每会话隔离文件系统 | AI Agent 实际操作的执行环境 |
+
+横切关注点 —— **网络**（CNI、eBPF、Egress Gateway `:8082`、Port Proxy `:6081`）、**存储**（etcd、Volume、Image、GPU）、**可观测性**（Prometheus、追踪、审计、健康检查）、**控制面**（配置热重载、HA 主选举、基于快照的迁移、CRD Controller、CRI Server）—— 贯穿上述五层运行。
+
+### 为什么采用分层架构？
+
+- **隔离性由结构保证** —— 请求必须经过 Security Manager（seccomp / 路径防护）和 Workspace Manager（路径限制）才能触及宿主机，因此绑定到工作区 A 的 AI Agent 永远无法读取工作区 B 的文件。
+- **运行时可插拔** —— Runtime Manager 将 kata / gvisor / runc / Job Object 抽象在统一的 `RuntimeProvider` 接口之后，同一套编排代码既能跑在 Linux 强隔离集群上，也能跑在 Windows 开发笔记本上。
+- **无需重启即可快照** —— Snapshot Manager（Windows 用 VSS，其他平台用 filesystem）让被破坏的工作区"回到上次好的状态"，无需重启服务。
+- **配置热重载** —— 控制面 watcher 在运行时将新配置应用到 Runtime Manager；空字段从默认值继承，因此部分更新是安全的。
+
+---
+
 ## 快速开始
 
 ### 方式一：原生二进制（快速，无需 Docker）
