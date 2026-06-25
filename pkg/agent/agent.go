@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -15,6 +16,10 @@ import (
 	"k8s.io/klog/v2"
 
 	sandboxv1alpha1 "github.com/nexusbox/nexusbox/pkg/apis/sandbox/v1alpha1"
+	"github.com/nexusbox/nexusbox/pkg/logging"
+	"github.com/nexusbox/nexusbox/pkg/security/filesystem"
+	"github.com/nexusbox/nexusbox/pkg/security/resource"
+	"github.com/nexusbox/nexusbox/pkg/store/filestore"
 )
 
 // Agent represents a sandbox agent that runs on each node.
@@ -58,6 +63,24 @@ type Agent struct {
 
 	// resourceMonitor monitors local resources.
 	resourceMonitor *ResourceMonitor
+
+	// fileStore provides persistence for sandbox state.
+	fileStore *filestore.Store
+
+	// logCollector manages log collection.
+	logCollector *logging.LogCollector
+
+	// logIndex provides log search capabilities.
+	logIndex *logging.LogIndex
+
+	// logRetention manages log retention.
+	logRetention *logging.LogRetentionManager
+
+	// resourceManager enforces resource limits.
+	resourceManager *resource.Manager
+
+	// filesystemSandboxs maps sandbox key -> filesystem sandbox.
+	filesystemSandboxs map[string]*filesystem.Sandbox
 }
 
 // AgentConfig holds configuration for the agent.
@@ -235,16 +258,38 @@ func NewAgent(config *AgentConfig) (*Agent, error) {
 	}
 
 	a := &Agent{
-		config:            config,
-		nodeName:          config.NodeName,
-		nodeIP:            config.NodeIP,
-		sandboxes:         make(map[string]*LocalSandbox),
-		stopCh:            make(chan struct{}),
-		heartbeatInterval: config.HeartbeatInterval,
+		config:             config,
+		nodeName:           config.NodeName,
+		nodeIP:             config.NodeIP,
+		sandboxes:          make(map[string]*LocalSandbox),
+		stopCh:             make(chan struct{}),
+		heartbeatInterval:  config.HeartbeatInterval,
+		filesystemSandboxs: make(map[string]*filesystem.Sandbox),
 	}
 
 	// Initialize resource monitor
 	a.resourceMonitor = NewResourceMonitor(config.MetricsInterval)
+
+	// Initialize file-based persistence store.
+	storeDir := filepath.Join(os.Getenv("HOME"), ".nexusbox")
+	if storeDir == filepath.Join("", ".nexusbox") {
+		storeDir = ".nexusbox"
+	}
+	fs, err := filestore.NewStore(storeDir)
+	if err != nil {
+		klog.Warningf("Failed to initialize file store: %v (using in-memory only)", err)
+	} else {
+		a.fileStore = fs
+	}
+
+	// Initialize logging.
+	logDir := filepath.Join(storeDir, "logs")
+	a.logCollector = logging.NewLogCollector(logDir)
+	a.logIndex = logging.NewLogIndex(logDir)
+	a.logRetention = logging.NewLogRetentionManager(a.logCollector, a.logIndex)
+
+	// Initialize resource manager.
+	a.resourceManager = resource.NewManager()
 
 	// Initialize HTTP server
 	a.initHTTPServer()
@@ -274,6 +319,16 @@ func (a *Agent) Start(ctx context.Context) error {
 		a.resourceMonitor.Start(ctx)
 	}
 
+	// Start file store periodic flush.
+	if a.fileStore != nil {
+		go a.fileStore.Start(ctx.Done())
+	}
+
+	// Start log retention manager.
+	if a.logRetention != nil {
+		go a.logRetention.Start()
+	}
+
 	// Start sandbox cleanup loop
 	go wait.Until(a.cleanupStaleSandboxes, 30*time.Second, a.stopCh)
 
@@ -285,6 +340,27 @@ func (a *Agent) Start(ctx context.Context) error {
 func (a *Agent) Stop() error {
 	klog.Info("Stopping sandbox agent")
 	close(a.stopCh)
+
+	// Stop log retention manager.
+	if a.logRetention != nil {
+		a.logRetention.Stop()
+	}
+
+	// Stop file store (final flush).
+	if a.fileStore != nil {
+		a.fileStore.Stop()
+	}
+
+	// Flush all log indexes.
+	if a.logIndex != nil {
+		a.mu.RLock()
+		for key := range a.sandboxes {
+			if sb, ok := a.sandboxes[key]; ok {
+				a.logIndex.FlushIndex(sb.Sandbox.Name)
+			}
+		}
+		a.mu.RUnlock()
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -441,6 +517,53 @@ func (a *Agent) CreateSandbox(ctx context.Context, sb *sandboxv1alpha1.Sandbox) 
 
 	klog.Infof("Creating sandbox %s on node %s", key, a.nodeName)
 
+	// Set up filesystem sandbox with path whitelist.
+	workspacePath := sb.Spec.WorkingDir
+	if workspacePath == "" || !filepath.IsAbs(workspacePath) {
+		workspacePath = filepath.Join(os.TempDir(), "nexusbox", sb.Name)
+	}
+	// Ensure workspace directory exists.
+	if err := os.MkdirAll(workspacePath, 0755); err != nil {
+		klog.Warningf("Failed to create workspace directory %s: %v", workspacePath, err)
+	}
+	fsConfig := filesystem.DefaultConfig(workspacePath)
+	fsSandbox, err := filesystem.NewSandbox(fsConfig)
+	if err != nil {
+		klog.Warningf("Failed to create filesystem sandbox for %s: %v", key, err)
+	} else {
+		a.filesystemSandboxs[key] = fsSandbox
+		klog.Infof("Filesystem sandbox initialized for %s, workspace: %s", key, workspacePath)
+	}
+
+	// Apply resource limits.
+	if a.resourceManager != nil {
+		var storageSpec *sandboxv1alpha1.SandboxStorageSpec
+		if sb.Spec.Storage != nil {
+			storageSpec = sb.Spec.Storage
+		}
+		limits := resource.FromSandboxSpec(&sb.Spec.Resources, storageSpec)
+		if err := a.resourceManager.ApplyLimits(ctx, key, workspacePath, limits); err != nil {
+			klog.Warningf("Failed to apply resource limits for %s: %v", key, err)
+		} else {
+			klog.Infof("Resource limits applied for %s: CPU=%s, Memory=%s, DiskQuota=%d",
+				key, limits.CPU, limits.Memory, limits.DiskQuota)
+		}
+	}
+
+	// Persist sandbox state.
+	if a.fileStore != nil {
+		if err := a.fileStore.CreateSandbox(sb); err != nil {
+			klog.Warningf("Failed to persist sandbox %s: %v", key, err)
+		}
+	}
+
+	// Open log stream for the sandbox.
+	if a.logCollector != nil {
+		if _, err := a.logCollector.Open(sb.Name); err != nil {
+			klog.Warningf("Failed to open log stream for %s: %v", key, err)
+		}
+	}
+
 	// In production, create the actual container/runtime here
 	// For now, transition to Running after a short delay
 	go func() {
@@ -498,7 +621,29 @@ func (a *Agent) DeleteSandbox(ctx context.Context, key string) error {
 		time.Sleep(50 * time.Millisecond)
 		a.mu.Lock()
 		delete(a.sandboxes, key)
+		delete(a.filesystemSandboxs, key)
 		a.mu.Unlock()
+
+		// Remove resource limits.
+		if a.resourceManager != nil {
+			a.resourceManager.RemoveLimits(key)
+		}
+
+		// Close log stream.
+		if a.logCollector != nil {
+			a.logCollector.Close(sb.Sandbox.Name)
+		}
+
+		// Flush log index.
+		if a.logIndex != nil {
+			a.logIndex.FlushIndex(sb.Sandbox.Name)
+		}
+
+		// Delete from persistent store.
+		if a.fileStore != nil {
+			a.fileStore.DeleteSandbox(sb.Sandbox.Name)
+		}
+
 		klog.Infof("Deleted sandbox %s from node %s", key, a.nodeName)
 	}()
 
