@@ -1,10 +1,3 @@
-/*
-Copyright 2024 NexusBox Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-*/
-
 package gateway
 
 import (
@@ -24,6 +17,7 @@ import (
 
 	"github.com/nexusbox/nexusbox/pkg/sandbox/lifecycle"
 	"github.com/nexusbox/nexusbox/pkg/sandbox/runtime"
+	"github.com/nexusbox/nexusbox/pkg/template"
 	"github.com/nexusbox/nexusbox/pkg/tenant"
 	"github.com/nexusbox/nexusbox/pkg/tenant/quota"
 )
@@ -39,11 +33,13 @@ type Gateway struct {
 	tenantManager    *tenant.TenantManager
 	quotaManager     *quota.QuotaManager
 
-	shellService   *ShellService
-	fileService    *FileService
-	browserService *BrowserService
-	codeService    *CodeService
-	sandboxService *SandboxService
+	shellService    *ShellService
+	fileService     *FileService
+	browserService  *BrowserService
+	codeService     *CodeService
+	sandboxService  *SandboxService
+	templateService *TemplateService
+	e2bService      *E2BService
 
 	// Observability
 	metrics     *MetricsCollector
@@ -61,6 +57,9 @@ type GatewayConfig struct {
 	TenantManager    *tenant.TenantManager
 	QuotaManager     *quota.QuotaManager
 	Workspace        string
+	// TemplateManager manages sandbox templates. If nil, a new one is created
+	// and seeded with default templates.
+	TemplateManager *template.Manager
 }
 
 // NewGateway creates a new Gateway instance.
@@ -68,6 +67,12 @@ func NewGateway(config *GatewayConfig) *Gateway {
 	workspace := config.Workspace
 	if workspace == "" {
 		workspace = "/home/sandbox"
+	}
+
+	// Initialize template manager if not provided
+	tmplMgr := config.TemplateManager
+	if tmplMgr == nil {
+		tmplMgr = template.NewManager()
 	}
 
 	g := &Gateway{
@@ -80,10 +85,21 @@ func NewGateway(config *GatewayConfig) *Gateway {
 		browserService:   NewBrowserService(),
 		codeService:      NewCodeService(),
 		sandboxService:   NewSandboxService(config.LifecycleManager, config.RuntimeManager),
+		templateService:  NewTemplateService(tmplMgr),
 		metrics:          NewMetricsCollector(),
 		auditLogger:      NewAuditLogger(10000),
 		stopCh:           make(chan struct{}),
 	}
+
+	// Initialize E2B compatibility service
+	g.e2bService = NewE2BService(
+		config.LifecycleManager,
+		config.RuntimeManager,
+		g.templateService,
+		g.shellService,
+		g.fileService,
+		g.codeService,
+	)
 
 	mux := http.NewServeMux()
 	g.registerRoutes(mux)
@@ -152,6 +168,12 @@ func (g *Gateway) BrowserService() *BrowserService { return g.browserService }
 // CodeService returns the code service instance.
 func (g *Gateway) CodeService() *CodeService { return g.codeService }
 
+// TemplateService returns the template service instance.
+func (g *Gateway) TemplateService() *TemplateService { return g.templateService }
+
+// E2BService returns the E2B compatibility service instance.
+func (g *Gateway) E2BService() *E2BService { return g.e2bService }
+
 func (g *Gateway) registerRoutes(mux *http.ServeMux) {
 	// Health & system
 	mux.HandleFunc("/healthz", g.handleHealthz)
@@ -214,6 +236,12 @@ func (g *Gateway) registerRoutes(mux *http.ServeMux) {
 	// Proxy & preview
 	mux.HandleFunc("/v1/proxy/health", g.handleProxyHealth)
 	mux.HandleFunc("/v1/proxy/diagnose", g.handleProxyDiagnose)
+
+	// Template management API
+	g.templateService.RegisterRoutes(mux)
+
+	// E2B SDK-compatible API (drop-in replacement for E2B)
+	g.e2bService.RegisterRoutes(mux)
 }
 
 // --- Middleware ---
@@ -386,6 +414,27 @@ var apiIndex = &APIIndex{
 			{Method: "DELETE", Path: "/v1/tenants/{name}", Desc: "Delete tenant"},
 			{Method: "GET", Path: "/v1/quotas", Desc: "List quotas"},
 			{Method: "GET", Path: "/v1/quotas/{name}", Desc: "Get quota"},
+		}},
+		{Name: "Templates", Endpoints: []APIEndpoint{
+			{Method: "GET", Path: "/v1/templates", Desc: "List templates"},
+			{Method: "POST", Path: "/v1/templates", Desc: "Create template"},
+			{Method: "GET", Path: "/v1/templates/{name}", Desc: "Get template"},
+			{Method: "PUT", Path: "/v1/templates/{name}", Desc: "Update template"},
+			{Method: "DELETE", Path: "/v1/templates/{name}", Desc: "Delete template"},
+		}},
+		{Name: "E2B Compatible", Endpoints: []APIEndpoint{
+			{Method: "POST", Path: "/e2b/v1/sandboxes", Desc: "Create sandbox (E2B SDK)"},
+			{Method: "GET", Path: "/e2b/v1/sandboxes", Desc: "List sandboxes (E2B SDK)"},
+			{Method: "GET", Path: "/e2b/v1/sandboxes/{id}", Desc: "Get sandbox (E2B SDK)"},
+			{Method: "DELETE", Path: "/e2b/v1/sandboxes/{id}", Desc: "Kill sandbox (E2B SDK)"},
+			{Method: "POST", Path: "/e2b/v1/sandboxes/{id}/commands", Desc: "Run command (E2B SDK)"},
+			{Method: "POST", Path: "/e2b/v1/sandboxes/{id}/files", Desc: "Read/Write file (E2B SDK)"},
+			{Method: "POST", Path: "/e2b/v1/sandboxes/{id}/code", Desc: "Execute code (E2B SDK)"},
+			{Method: "POST", Path: "/e2b/v1/sandboxes/{id}/refreshes", Desc: "Refresh timeout (E2B SDK)"},
+			{Method: "POST", Path: "/e2b/v1/sandboxes/{id}/pause", Desc: "Pause sandbox (E2B SDK)"},
+			{Method: "POST", Path: "/e2b/v1/sandboxes/{id}/resume", Desc: "Resume sandbox (E2B SDK)"},
+			{Method: "GET", Path: "/e2b/v1/templates", Desc: "List templates (E2B SDK)"},
+			{Method: "GET", Path: "/e2b/v1/health", Desc: "E2B health check"},
 		}},
 	},
 }
