@@ -43,7 +43,7 @@
 
 ## NexusBox 是什么？
 
-NexusBox 是一款**企业级沙箱平台**，专为 AI Agent 设计。它提供完全隔离的执行环境，AI Agent 可以在其中执行真实操作——运行 Shell 命令、读写文件、执行代码、自动化浏览器——**对宿主机零风险**。
+NexusBox 是一款**能在本地主机运行的沙箱平台**，专为 AI Agent 设计。它提供完全隔离的执行环境，AI Agent 可以在其中执行真实操作——运行 Shell 命令、读写文件、执行代码、自动化浏览器——**对宿主机零风险**。
 
 与仅支持 `curl` 或 `docker exec` 的简单 Demo 沙箱不同，NexusBox 实现了 **MCP（Model Context Protocol，模型上下文协议）**，暴露 18 个真实工具供 AI Agent 自主调用。当集成到 Trae、Claude Desktop 或 Cursor 等 AI 编码助手后，NexusBox 将它们从文本生成器转变为**自主 Agent**，可以在隔离工作区中安全执行危险操作。
 
