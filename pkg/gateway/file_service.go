@@ -1,10 +1,3 @@
-/*
-Copyright 2024 NexusBox Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-*/
-
 package gateway
 
 import (
@@ -127,6 +120,42 @@ type FileWatchRequest struct {
 // --- Handlers ---
 
 // Read handles file read requests.
+// ReadFile reads a file synchronously and returns its contents.
+// Used by the E2B compatibility layer and other internal callers.
+func (f *FileService) ReadFile(path string) ([]byte, error) {
+	fullPath, err := f.resolvePathStrict(path)
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(fullPath)
+	if err != nil {
+		return nil, err
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("path is a directory: %s", path)
+	}
+	return os.ReadFile(fullPath)
+}
+
+// WriteFile writes content to a file synchronously.
+// Used by the E2B compatibility layer and other internal callers.
+func (f *FileService) WriteFile(path string, content []byte) error {
+	fullPath, err := f.resolvePathStrict(path)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(fullPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	// Atomic write: write to temp file then rename
+	tmp := fullPath + ".tmp"
+	if err := os.WriteFile(tmp, content, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, fullPath)
+}
+
 func (f *FileService) Read(w http.ResponseWriter, r *http.Request) {
 	var req FileReadRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
