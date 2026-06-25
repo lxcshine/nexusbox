@@ -1,10 +1,3 @@
-/*
-Copyright 2024 NexusBox Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-*/
-
 package gateway
 
 import (
@@ -142,6 +135,123 @@ func (c *CodeService) Info(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, CodeInfoResponse{
 		Languages: languages,
 	})
+}
+
+// ExecuteCode executes code synchronously and returns the result.
+// Used by the E2B compatibility layer and other internal callers.
+func (c *CodeService) ExecuteCode(language, code string, timeoutSec int32) (stdout, stderr string, exitCode int, err error) {
+	req := &CodeExecuteRequest{
+		Language: language,
+		Code:     code,
+		Timeout:  int(timeoutSec),
+	}
+
+	switch strings.ToLower(language) {
+	case "python", "python3":
+		return c.executePythonSync(req)
+	case "nodejs", "node", "javascript", "js":
+		return c.executeNodeJSSync(req)
+	default:
+		return "", fmt.Sprintf("unsupported language: %s", language), -1, fmt.Errorf("unsupported language: %s", language)
+	}
+}
+
+// executePythonSync executes Python code synchronously.
+func (c *CodeService) executePythonSync(req *CodeExecuteRequest) (string, string, int, error) {
+	if c.pythonPath == "" {
+		return "", "python is not available", -1, fmt.Errorf("python not available")
+	}
+
+	tmpFile, err := os.CreateTemp("", "nexusbox-python-*.py")
+	if err != nil {
+		return "", err.Error(), -1, err
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.WriteString(req.Code)
+	tmpFile.Close()
+
+	timeout := c.maxExecutionTime
+	if req.Timeout > 0 {
+		timeout = time.Duration(req.Timeout) * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, c.pythonPath, tmpFile.Name())
+	if req.WorkDir != "" {
+		cmd.Dir = req.WorkDir
+	}
+	cmd.Env = os.Environ()
+	for k, v := range req.Env {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	stdout := &limitedWriter{max: c.maxOutputBytes}
+	stderr := &limitedWriter{max: c.maxOutputBytes}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+
+	err = cmd.Run()
+	exitCode := 0
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			exitCode = -1
+		} else if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			exitCode = -1
+		}
+	}
+	return stdout.String(), stderr.String(), exitCode, err
+}
+
+// executeNodeJSSync executes Node.js code synchronously.
+func (c *CodeService) executeNodeJSSync(req *CodeExecuteRequest) (string, string, int, error) {
+	if c.nodePath == "" {
+		return "", "nodejs is not available", -1, fmt.Errorf("nodejs not available")
+	}
+
+	tmpFile, err := os.CreateTemp("", "nexusbox-node-*.js")
+	if err != nil {
+		return "", err.Error(), -1, err
+	}
+	defer os.Remove(tmpFile.Name())
+	tmpFile.WriteString(req.Code)
+	tmpFile.Close()
+
+	timeout := c.maxExecutionTime
+	if req.Timeout > 0 {
+		timeout = time.Duration(req.Timeout) * time.Second
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, c.nodePath, tmpFile.Name())
+	if req.WorkDir != "" {
+		cmd.Dir = req.WorkDir
+	}
+	cmd.Env = os.Environ()
+	for k, v := range req.Env {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", k, v))
+	}
+
+	stdout := &limitedWriter{max: c.maxOutputBytes}
+	stderr := &limitedWriter{max: c.maxOutputBytes}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+
+	err = cmd.Run()
+	exitCode := 0
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			exitCode = -1
+		} else if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			exitCode = -1
+		}
+	}
+	return stdout.String(), stderr.String(), exitCode, err
 }
 
 // executePython executes Python code with timeout and output limits.
