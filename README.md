@@ -37,6 +37,8 @@
 <p align="center">
   <a href="docs/quick-start-guide.md">Quick Start Guide (EN)</a> &bull;
   <a href="docs/quick-start-guide_zh.md">快速启动指南 (中文)</a>
+  <a href="docs/testing.md">Testing Guide (EN)</a> &bull;
+  <a href="docs/testing_zh.md">测试指南 (中文)</a>
 </p>
 
 ---
