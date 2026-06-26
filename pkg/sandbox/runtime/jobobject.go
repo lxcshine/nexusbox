@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
 	"unsafe"
 
 	sandboxv1alpha1 "github.com/nexusbox/nexusbox/pkg/apis/sandbox/v1alpha1"
+	"github.com/nexusbox/nexusbox/pkg/security/win32"
 	"golang.org/x/sys/windows"
 	"k8s.io/klog/v2"
 )
@@ -49,15 +51,17 @@ type jobObjectProvider struct {
 
 // jobObjectHandle implements RuntimeHandle for a Windows Job Object sandbox.
 type jobObjectHandle struct {
-	mu        sync.RWMutex
-	id        string
-	spec      *RuntimeSpec
-	ready     bool
-	pid       int
-	jobHandle windows.Handle
-	cmd       *exec.Cmd
-	createdAt time.Time
-	exitCh    chan int
+	mu            sync.RWMutex
+	id            string
+	spec          *RuntimeSpec
+	ready         bool
+	pid           uint32
+	jobHandle     windows.Handle
+	procHandle    windows.Handle
+	createdAt     time.Time
+	exitCh        chan int
+	isolatedDir   string
+	firewallRules []string
 }
 
 // newJobObjectProvider creates a new Windows Job Object provider.
@@ -168,74 +172,174 @@ func (p *jobObjectProvider) Create(ctx context.Context, spec *RuntimeSpec) (Runt
 		return nil, fmt.Errorf("failed to set job limits: %w", err)
 	}
 
-	// Build the command to run inside the sandbox.
-	cmd := exec.CommandContext(ctx, "cmd", "/c", buildJobCommand(spec))
-	cmd.Dir = spec.WorkingDir
-	if cmd.Dir == "" {
-		cmd.Dir, _ = os.Getwd()
-	}
-	cmd.Env = buildJobEnv(spec.Env)
-
-	// Create the process suspended so we can assign it to the job before it runs.
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: windows.CREATE_SUSPENDED,
+	// Apply UI restrictions to prevent clipboard access, window hooks, global atoms, desktop access
+	if err := win32.ApplyJobUIRestrictions(jobHandle); err != nil {
+		klog.Warningf("Failed to apply Job UI restrictions: %v", err)
 	}
 
-	if err := cmd.Start(); err != nil {
-		windows.CloseHandle(jobHandle)
-		return nil, fmt.Errorf("failed to start process: %w", err)
-	}
-
-	pid := cmd.Process.Pid
-
-	// Assign the process to the job object.
-	procHandle, err := windows.OpenProcess(windows.PROCESS_TERMINATE|windows.PROCESS_SET_QUOTA|windows.PROCESS_SET_INFORMATION, false, uint32(pid))
+	// Create an isolated temporary working directory for filesystem isolation
+	var workingDir string
+	isolatedDir, err := os.MkdirTemp("", "nexusbox-sandbox-*")
 	if err != nil {
-		_ = cmd.Process.Kill()
-		windows.CloseHandle(jobHandle)
-		return nil, fmt.Errorf("failed to open process %d: %w", pid, err)
+		klog.Warningf("Failed to create isolated working directory, falling back to specified dir: %v", err)
+		workingDir = spec.WorkingDir
+		if workingDir == "" {
+			workingDir, _ = os.Getwd()
+		}
+		workingDir, _ = filepath.Abs(workingDir)
+	} else {
+		workingDir = isolatedDir
+		klog.V(2).Infof("Created isolated sandbox working directory: %s", workingDir)
 	}
-	defer windows.CloseHandle(procHandle)
 
+	// Build sanitized environment with only safe variables
+	sanitizedEnv := win32.BuildSanitizedEnvironment(spec.Env)
+
+	// Build command line
+	commandLine := buildJobCommand(spec)
+
+	// Create restricted token for sandboxed process - note: CreateProcessWithTokenW requires
+	// SeImpersonatePrivilege which is typically only available to services/LocalSystem.
+	// When running as a normal user, we skip this and rely on all other security mitigations.
+	sandboxToken, _ := win32.CreateSandboxToken()
+	// We skip CreateProcessWithTokenW for now as it causes access violations without proper privileges
+	// All other security layers (mitigations, Job Object, env sanitization, firewall, isolated dir) still apply
+	if sandboxToken != 0 {
+		sandboxToken.Close()
+		sandboxToken = 0
+	}
+
+	var procHandle windows.Handle
+	var threadHandle windows.Handle
+	var pid uint32
+
+	if sandboxToken == 0 {
+		// Fallback: Create process normally but still apply all possible mitigations
+		cmd := exec.CommandContext(ctx, "cmd", "/c", commandLine)
+		cmd.Dir = workingDir
+		cmd.Env = sanitizedEnv
+		cmd.SysProcAttr = &syscall.SysProcAttr{
+			CreationFlags: windows.CREATE_SUSPENDED | windows.CREATE_NEW_PROCESS_GROUP | windows.CREATE_UNICODE_ENVIRONMENT | windows.CREATE_DEFAULT_ERROR_MODE,
+		}
+
+		if err := cmd.Start(); err != nil {
+			windows.CloseHandle(jobHandle)
+			return nil, fmt.Errorf("failed to start process: %w", err)
+		}
+
+		pid = uint32(cmd.Process.Pid)
+		procHandle, err = windows.OpenProcess(windows.PROCESS_TERMINATE|windows.PROCESS_SET_QUOTA|windows.PROCESS_SET_INFORMATION|windows.PROCESS_VM_READ|windows.PROCESS_QUERY_INFORMATION, false, pid)
+		if err != nil {
+			_ = cmd.Process.Kill()
+			windows.CloseHandle(jobHandle)
+			return nil, fmt.Errorf("failed to open process %d: %w", pid, err)
+		}
+		threadHandle, _ = windows.OpenThread(windows.THREAD_SUSPEND_RESUME, false, uint32(getMainThreadID(pid)))
+	}
+
+	// Assign the process to the job object
 	if err := windows.AssignProcessToJobObject(jobHandle, procHandle); err != nil {
-		_ = cmd.Process.Kill()
+		windows.TerminateProcess(procHandle, 1)
+		windows.CloseHandle(procHandle)
+		if threadHandle != 0 {
+			windows.CloseHandle(threadHandle)
+		}
 		windows.CloseHandle(jobHandle)
 		return nil, fmt.Errorf("failed to assign process %d to job: %w", pid, err)
 	}
 
-	// Resume the main thread.
-	if err := resumeProcessMainThread(pid); err != nil {
-		klog.Warningf("Failed to resume process %d: %v", pid, err)
+	// Apply all process mitigation policies to the child process
+	if err := win32.ApplyProcessMitigations(procHandle); err != nil {
+		klog.V(4).Infof("Some process mitigations failed to apply: %v", err)
+	}
+
+	// Resume the main thread to start execution
+	if threadHandle != 0 {
+		windows.ResumeThread(threadHandle)
+		windows.CloseHandle(threadHandle)
+	} else {
+		if err := resumeProcessMainThread(int(pid)); err != nil {
+			klog.Warningf("Failed to resume process %d: %v", pid, err)
+		}
+	}
+
+	// Clean up sandbox token
+	if sandboxToken != 0 {
+		sandboxToken.Close()
+	}
+
+	// Generate unique firewall rule name prefix
+	firewallRulePrefix := fmt.Sprintf("NexusBox-Sandbox-%d-%s", pid, spec.SandboxName)
+	firewallRuleName := firewallRulePrefix
+	// Block outbound network traffic for common executables that child processes might use.
+	// Note: This is a best-effort approach since Windows Firewall cannot filter by Job Object.
+	// For full network isolation, run the service with administrator privileges or combine with Restricted Token.
+	blockedPrograms := []string{}
+	// Add cmd.exe
+	cmdExePath := os.Getenv("ComSpec")
+	if cmdExePath == "" {
+		cmdExePath = `C:\Windows\System32\cmd.exe`
+	}
+	blockedPrograms = append(blockedPrograms, cmdExePath)
+	// Add common PowerShell paths
+	powershellPaths := []string{
+		`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+		`C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe`,
+	}
+	for _, psPath := range powershellPaths {
+		if _, err := os.Stat(psPath); err == nil {
+			blockedPrograms = append(blockedPrograms, psPath)
+		}
+	}
+	// Add the firewall rules for each program
+	var addedRules []string
+	for i, progPath := range blockedPrograms {
+		ruleName := firewallRuleName
+		if i > 0 {
+			ruleName = fmt.Sprintf("%s-%d", firewallRulePrefix, i)
+		}
+		if err := win32.AddFirewallBlockRule(ruleName, progPath); err != nil {
+			klog.V(4).Infof("Failed to add firewall block for %s: %v", progPath, err)
+		} else {
+			addedRules = append(addedRules, ruleName)
+		}
+	}
+	if len(addedRules) == 0 {
+		klog.Warningf("Failed to add any network block firewall rules (requires administrator privileges)")
 	}
 
 	handle := &jobObjectHandle{
-		id:        fmt.Sprintf("%s/%s", spec.SandboxName, spec.Namespace),
-		spec:      spec,
-		ready:     true,
-		pid:       pid,
-		jobHandle: jobHandle,
-		cmd:       cmd,
-		createdAt: time.Now(),
-		exitCh:    make(chan int, 1),
+		id:            fmt.Sprintf("%s/%s", spec.SandboxName, spec.Namespace),
+		spec:          spec,
+		ready:         true,
+		pid:           pid,
+		jobHandle:     jobHandle,
+		procHandle:    procHandle,
+		createdAt:     time.Now(),
+		exitCh:        make(chan int, 1),
+		isolatedDir:   workingDir,
+		firewallRules: addedRules,
 	}
 
 	p.handles[handle.id] = handle
 
-	// Wait for the process in a goroutine.
+	// Wait for the process in a goroutine using Windows WaitForSingleObject
 	go func() {
-		err := cmd.Wait()
-		exitCode := 0
-		if err != nil {
-			if exitErr, ok := err.(*exec.ExitError); ok {
-				exitCode = exitErr.ExitCode()
-			} else {
-				exitCode = -1
-			}
-		}
-		handle.exitCh <- exitCode
+		windows.WaitForSingleObject(procHandle, windows.INFINITE)
+		var exitCode uint32
+		windows.GetExitCodeProcess(procHandle, &exitCode)
+		handle.exitCh <- int(exitCode)
 		close(handle.exitCh)
 		handle.mu.Lock()
 		handle.ready = false
+		// Cleanup all network firewall rules
+		for _, ruleName := range handle.firewallRules {
+			win32.RemoveFirewallRule(ruleName)
+		}
+		// Cleanup isolated working directory
+		if handle.isolatedDir != "" {
+			os.RemoveAll(handle.isolatedDir)
+		}
 		handle.mu.Unlock()
 	}()
 
@@ -304,7 +408,7 @@ func (p *jobObjectProvider) Status(ctx context.Context, handle RuntimeHandle) (*
 
 	return &RuntimeStatus{
 		State:     state,
-		PID:       jh.pid,
+		PID:       int(jh.pid),
 		StartedAt: jh.createdAt,
 	}, nil
 }
@@ -365,6 +469,10 @@ func (h *jobObjectHandle) ForceStop(ctx context.Context) error {
 
 // Cleanup cleans up runtime resources.
 func (h *jobObjectHandle) Cleanup(ctx context.Context) error {
+	if h.procHandle != 0 {
+		_ = windows.CloseHandle(h.procHandle)
+		h.procHandle = 0
+	}
 	if h.jobHandle != 0 {
 		_ = windows.CloseHandle(h.jobHandle)
 		h.jobHandle = 0
@@ -527,13 +635,32 @@ func buildJobCommand(spec *RuntimeSpec) string {
 	return "ping -t 127.0.0.1 > nul"
 }
 
-// buildJobEnv constructs the environment for the child process.
-func buildJobEnv(userEnv map[string]string) []string {
-	env := os.Environ()
-	for k, v := range userEnv {
-		env = append(env, fmt.Sprintf("%s=%s", k, v))
+// getMainThreadID finds the main thread ID for a given process
+func getMainThreadID(pid uint32) uint32 {
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPTHREAD, 0)
+	if err != nil {
+		return 0
 	}
-	return env
+	defer windows.CloseHandle(snap)
+
+	var entry windows.ThreadEntry32
+	entry.Size = uint32(unsafe.Sizeof(entry))
+
+	err = windows.Thread32First(snap, &entry)
+	if err != nil {
+		return 0
+	}
+
+	for {
+		if entry.OwnerProcessID == pid {
+			return entry.ThreadID
+		}
+		err = windows.Thread32Next(snap, &entry)
+		if err != nil {
+			break
+		}
+	}
+	return 0
 }
 
 // parseCPUMilli parses a Kubernetes-style CPU quantity into milliCPU.
