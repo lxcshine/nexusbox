@@ -217,6 +217,93 @@ golangci-lint run ./...        # 如已安装
 
 ---
 
+## 验证 JupyterLab 通过 DevTool 代理访问
+
+DevTool 子系统（`pkg/devtool`）在 NexusBox 沙箱内启动 JupyterLab / code-server，并通过兼容 WebSocket 的反向代理对外暴露。端到端脚本 [test_jupyter_proxy.ps1](../test_jupyter_proxy.ps1) 验证完整链路：创建沙箱 → 启动 DevTool → 健康检查 → 代理访问 → 清理资源。
+
+### 前置条件
+
+- Windows 主机（脚本是 PowerShell 编写）。
+- NexusBox 开发服务器已运行在 `http://localhost:8080`。在仓库根目录启动：
+
+  ```powershell
+  go run ./cmd/sandbox-dev/ -port=8080 -mcp-port=8079 -proxy-port=6081 `
+      -workspace=$env:TEMP\nexusbox-test -log-level=info
+  ```
+
+- `jupyter` 可执行文件能在 `PATH` 中找到（启动器会在启动日志中打印解析到的路径，例如 `D:\software\anaconda3\Scripts\jupyter.exe`）。若找不到，DevTool API 会返回 `jupyter binary not found`。
+
+### 运行脚本
+
+在仓库根目录执行：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File test_jupyter_proxy.ps1
+```
+
+脚本自包含且幂等——它会自行创建沙箱（`jupyter-test-sb`）和工作目录（`%TEMP%\nexusbox-jupyter-test`），结束时自动删除。
+
+### 脚本执行流程
+
+| 步骤 | 动作 | API / URL |
+|------|------|-----------|
+| 1/6 | 检查 Gateway 健康状态 | `GET /healthz` |
+| 2/6 | 创建带独立工作目录的沙箱 | `POST /v1/sandboxes` |
+| 3/6 | 通过 DevTool API 启动 JupyterLab（测试中关闭了认证） | `POST /v1/devtools` |
+| 4/6 | 轮询 DevTool 健康端点直到 JupyterLab 就绪（最长 40 秒） | `GET /v1/devtools/{instanceId}/health` |
+| 5/6 | 通过代理访问 JupyterLab 并校验响应中包含 Jupyter 标识 | `GET /v1/devtools/proxy/jupyter/jupyter-test-sb/` |
+| 6/6 | 列出 DevTool 实例，然后停止 DevTool 并删除沙箱 | `DELETE /v1/devtools/{instanceId}` / `DELETE /v1/sandboxes/{name}` |
+
+### 期望输出
+
+成功运行时会打印：
+
+```
+[1/6] Checking NexusBox Gateway health...
+  OK: Gateway is healthy
+[2/6] Creating NexusBox sandbox...
+  OK: Sandbox created
+[3/6] Starting JupyterLab via DevTool API...
+  OK: JupyterLab dev tool started
+  Instance ID: dt-jupyter-xxxxxxxxxxxx
+  Port: 49152
+  Status: pending
+[4/6] Waiting for JupyterLab to become ready...
+  OK: JupyterLab is healthy (waited 4s)
+[5/6] Testing JupyterLab access through DevTool proxy...
+  HTTP Status: 200
+  Content Length: 3929 bytes
+  OK: Response contains JupyterLab content!
+[6/6] Listing all dev tool instances...
+  Found 1 dev tool instance(s):
+    - ID: dt-jupyter-xxxxxxxxxxxx, Type: jupyter, Port: 49152, Status: running
+Cleaning up: stopping JupyterLab instance...
+  OK: Dev tool stopped
+Cleaning up: deleting sandbox...
+  OK: Sandbox deleted
+```
+
+### 手动访问
+
+脚本（或任意 DevTool 启动调用）让 JupyterLab 保持运行后，也可以直接在浏览器打开代理 URL：
+
+```
+http://localhost:8080/v1/devtools/proxy/jupyter/{sandboxId}/lab
+```
+
+代理会重写 Jupyter 的 `302 / → /lab?` 重定向，因此根路径同样可用。WebSocket 升级已支持，可正常使用实时内核会话。
+
+### 故障排查
+
+| 现象 | 可能原因 | 解决方法 |
+|------|----------|----------|
+| `jupyter binary not found` | Go 进程看到的 `PATH` 中没有 `jupyter` | 安装 JupyterLab，或将其 `Scripts` 目录加入 `PATH` 后重启开发服务器 |
+| DevTool 状态停留在 `failed` | JupyterLab 无法写入运行时文件 | 启动器已将 `JUPYTER_RUNTIME_DIR` / `JUPYTER_DATA_DIR` 重定向到工作目录——请确认工作目录存在且可写 |
+| 代理返回 `404 page not found` | JupyterLab 尚未就绪，或代理路径写错 | 等待 `status: running`，并使用精确路径 `/v1/devtools/proxy/jupyter/{sandboxId}/...` |
+| 代理返回 `503 dev tool is not running` | DevTool 启动后退出 | 查看沙箱工作目录下的 `.devtool-jupyter.log`，获取 Python 回溯信息 |
+
+---
+
 ## 新增测试
 
 1. 将测试文件放在被测代码旁边，命名为 `<source>_test.go`（如 `foo.go` → `foo_test.go`）。
