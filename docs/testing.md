@@ -217,6 +217,93 @@ Unit tests currently run on `ubuntu-latest`; the Windows Job Object integration 
 
 ---
 
+## Verifying JupyterLab Access Through the DevTool Proxy
+
+The DevTool subsystem (`pkg/devtool`) launches JupyterLab / code-server inside a NexusBox sandbox and exposes them through a WebSocket-compatible reverse proxy. The end-to-end script [test_jupyter_proxy.ps1](../test_jupyter_proxy.ps1) verifies the full path: sandbox creation → DevTool start → health check → proxy access → cleanup.
+
+### Prerequisites
+
+- Windows host (the script is PowerShell).
+- NexusBox dev server running on `http://localhost:8080`. Start it from the repo root:
+
+  ```powershell
+  go run ./cmd/sandbox-dev/ -port=8080 -mcp-port=8079 -proxy-port=6081 `
+      -workspace=$env:TEMP\nexusbox-test -log-level=info
+  ```
+
+- `jupyter` binary resolvable on `PATH` (the launcher logs the resolved path at startup, e.g. `D:\software\anaconda3\Scripts\jupyter.exe`). If absent, the DevTool API returns `jupyter binary not found`.
+
+### Running the Script
+
+From the repository root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File test_jupyter_proxy.ps1
+```
+
+The script is self-contained and idempotent — it creates its own sandbox (`jupyter-test-sb`) and working directory (`%TEMP%\nexusbox-jupyter-test`), then deletes them at the end.
+
+### What the Script Does
+
+| Step | Action | API / URL |
+|------|--------|-----------|
+| 1/6 | Health-check the Gateway | `GET /healthz` |
+| 2/6 | Create a sandbox with an isolated working dir | `POST /v1/sandboxes` |
+| 3/6 | Start JupyterLab via the DevTool API (auth disabled for the test) | `POST /v1/devtools` |
+| 4/6 | Poll the DevTool health endpoint until JupyterLab is ready (up to 40s) | `GET /v1/devtools/{instanceId}/health` |
+| 5/6 | Fetch JupyterLab through the proxy and verify the response contains Jupyter markers | `GET /v1/devtools/proxy/jupyter/jupyter-test-sb/` |
+| 6/6 | List DevTool instances, then stop the DevTool and delete the sandbox | `DELETE /v1/devtools/{instanceId}` / `DELETE /v1/sandboxes/{name}` |
+
+### Expected Output
+
+A successful run prints:
+
+```
+[1/6] Checking NexusBox Gateway health...
+  OK: Gateway is healthy
+[2/6] Creating NexusBox sandbox...
+  OK: Sandbox created
+[3/6] Starting JupyterLab via DevTool API...
+  OK: JupyterLab dev tool started
+  Instance ID: dt-jupyter-xxxxxxxxxxxx
+  Port: 49152
+  Status: pending
+[4/6] Waiting for JupyterLab to become ready...
+  OK: JupyterLab is healthy (waited 4s)
+[5/6] Testing JupyterLab access through DevTool proxy...
+  HTTP Status: 200
+  Content Length: 3929 bytes
+  OK: Response contains JupyterLab content!
+[6/6] Listing all dev tool instances...
+  Found 1 dev tool instance(s):
+    - ID: dt-jupyter-xxxxxxxxxxxx, Type: jupyter, Port: 49152, Status: running
+Cleaning up: stopping JupyterLab instance...
+  OK: Dev tool stopped
+Cleaning up: deleting sandbox...
+  OK: Sandbox deleted
+```
+
+### Manual Access
+
+Once the script (or any DevTool start call) leaves JupyterLab running, you can also open the proxy URL directly in a browser:
+
+```
+http://localhost:8080/v1/devtools/proxy/jupyter/{sandboxId}/lab
+```
+
+The proxy rewrites Jupyter's `302 / → /lab?` redirect so the root URL works too. WebSocket upgrade is supported for live kernel sessions.
+
+### Troubleshooting
+
+| Symptom | Likely cause | Fix |
+|---------|--------------|-----|
+| `jupyter binary not found` | `jupyter` not on `PATH` seen by the Go process | Install JupyterLab or add its `Scripts` directory to `PATH` and restart the dev server |
+| DevTool status stays `failed` | JupyterLab cannot write its runtime files | Launcher already redirects `JUPYTER_RUNTIME_DIR` / `JUPYTER_DATA_DIR` into the working dir — make sure the working dir exists and is writable |
+| Proxy returns `404 page not found` | JupyterLab not yet ready, or proxy path mistyped | Wait for `status: running` and use the exact path `/v1/devtools/proxy/jupyter/{sandboxId}/...` |
+| Proxy returns `503 dev tool is not running` | DevTool exited after startup | Inspect `.devtool-jupyter.log` in the sandbox working dir for the Python traceback |
+
+---
+
 ## Adding a New Test
 
 1. Place the file next to the code it tests, named `<source>_test.go` (e.g. `foo.go` → `foo_test.go`).
