@@ -15,11 +15,12 @@ import (
 
 	"k8s.io/klog/v2"
 
-	"github.com/nexusbox/nexusbox/pkg/sandbox/lifecycle"
-	"github.com/nexusbox/nexusbox/pkg/sandbox/runtime"
-	"github.com/nexusbox/nexusbox/pkg/template"
-	"github.com/nexusbox/nexusbox/pkg/tenant"
-	"github.com/nexusbox/nexusbox/pkg/tenant/quota"
+	"github.com/lxcshine/nexusbox/pkg/devtool"
+	"github.com/lxcshine/nexusbox/pkg/sandbox/lifecycle"
+	"github.com/lxcshine/nexusbox/pkg/sandbox/runtime"
+	"github.com/lxcshine/nexusbox/pkg/template"
+	"github.com/lxcshine/nexusbox/pkg/tenant"
+	"github.com/lxcshine/nexusbox/pkg/tenant/quota"
 )
 
 // Gateway provides the unified REST API gateway for the NexusBox sandbox system.
@@ -40,6 +41,7 @@ type Gateway struct {
 	sandboxService  *SandboxService
 	templateService *TemplateService
 	e2bService      *E2BService
+	devToolService  *DevToolService
 
 	// Observability
 	metrics     *MetricsCollector
@@ -60,6 +62,9 @@ type GatewayConfig struct {
 	// TemplateManager manages sandbox templates. If nil, a new one is created
 	// and seeded with default templates.
 	TemplateManager *template.Manager
+	// DevToolManager manages JupyterLab and code-server instances. If nil,
+	// dev tool endpoints return 503.
+	DevToolManager *devtool.DevToolManager
 }
 
 // NewGateway creates a new Gateway instance.
@@ -100,6 +105,9 @@ func NewGateway(config *GatewayConfig) *Gateway {
 		g.fileService,
 		g.codeService,
 	)
+
+	// Initialize DevTool service (JupyterLab / code-server management)
+	g.devToolService = NewDevToolService(config.DevToolManager)
 
 	mux := http.NewServeMux()
 	g.registerRoutes(mux)
@@ -242,6 +250,10 @@ func (g *Gateway) registerRoutes(mux *http.ServeMux) {
 
 	// E2B SDK-compatible API (drop-in replacement for E2B)
 	g.e2bService.RegisterRoutes(mux)
+
+	// DevTool API (JupyterLab / code-server management & proxy)
+	mux.HandleFunc("/v1/devtools", g.devToolService.ServeHTTP)
+	mux.HandleFunc("/v1/devtools/", g.devToolService.ServeHTTP)
 }
 
 // --- Middleware ---
