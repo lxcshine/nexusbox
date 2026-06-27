@@ -14,17 +14,18 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
 
-	"github.com/nexusbox/nexusbox/pkg/apis/sandbox/v1alpha1"
-	"github.com/nexusbox/nexusbox/pkg/gateway"
-	"github.com/nexusbox/nexusbox/pkg/mcp"
-	"github.com/nexusbox/nexusbox/pkg/network/ebpf"
-	"github.com/nexusbox/nexusbox/pkg/network/egress"
-	"github.com/nexusbox/nexusbox/pkg/proxy"
-	"github.com/nexusbox/nexusbox/pkg/sandbox/lifecycle"
-	sandboxRuntime "github.com/nexusbox/nexusbox/pkg/sandbox/runtime"
-	"github.com/nexusbox/nexusbox/pkg/template"
-	"github.com/nexusbox/nexusbox/pkg/tenant"
-	"github.com/nexusbox/nexusbox/pkg/tenant/quota"
+	"github.com/lxcshine/nexusbox/pkg/apis/sandbox/v1alpha1"
+	"github.com/lxcshine/nexusbox/pkg/devtool"
+	"github.com/lxcshine/nexusbox/pkg/gateway"
+	"github.com/lxcshine/nexusbox/pkg/mcp"
+	"github.com/lxcshine/nexusbox/pkg/network/ebpf"
+	"github.com/lxcshine/nexusbox/pkg/network/egress"
+	"github.com/lxcshine/nexusbox/pkg/proxy"
+	"github.com/lxcshine/nexusbox/pkg/sandbox/lifecycle"
+	sandboxRuntime "github.com/lxcshine/nexusbox/pkg/sandbox/runtime"
+	"github.com/lxcshine/nexusbox/pkg/template"
+	"github.com/lxcshine/nexusbox/pkg/tenant"
+	"github.com/lxcshine/nexusbox/pkg/tenant/quota"
 )
 
 func main() {
@@ -141,6 +142,13 @@ func main() {
 		klog.Info("Default tenant registered")
 	}
 
+	// Initialize DevTool Manager (JupyterLab / code-server lifecycle)
+	devToolMgr := devtool.NewDevToolManager()
+	klog.Infof("DevTool Manager created (jupyter=%s, code-server=%s)",
+		devToolMgr.Launcher().JupyterPath(), devToolMgr.Launcher().CodeServerPath())
+	// Wire dev tool manager into runtime manager for auto-start/cleanup
+	runtimeManager.SetDevToolManager(devtool.NewRuntimeAdapter(devToolMgr))
+
 	// Create Gateway
 	gatewayConfig := &gateway.GatewayConfig{
 		Port:             *port,
@@ -150,6 +158,7 @@ func main() {
 		LifecycleManager: lifecycleManager,
 		Workspace:        ws,
 		TemplateManager:  templateMgr,
+		DevToolManager:   devToolMgr,
 	}
 	gw := gateway.NewGateway(gatewayConfig)
 	klog.Infof("Gateway created on port %d", *port)
