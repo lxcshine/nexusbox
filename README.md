@@ -712,8 +712,6 @@ NexusBox/
 
 ## Star History
 
-## Star History
-
 <a href="https://www.star-history.com/?repos=lxcshine%2Fnexusbox&type=date&legend=top-left">
  <picture>
    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=lxcshine/nexusbox&type=date&theme=dark&legend=top-left" />
