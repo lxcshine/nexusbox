@@ -8,7 +8,7 @@ import (
 
 	"k8s.io/klog/v2"
 
-	sandboxv1alpha1 "github.com/nexusbox/nexusbox/pkg/apis/sandbox/v1alpha1"
+	sandboxv1alpha1 "github.com/lxcshine/nexusbox/pkg/apis/sandbox/v1alpha1"
 )
 
 // RuntimeManager manages sandbox runtimes across the cluster.
@@ -28,6 +28,10 @@ type RuntimeManager struct {
 
 	// config holds runtime configuration.
 	config *RuntimeManagerConfig
+
+	// devToolManager manages JupyterLab/code-server instances.
+	// If nil, dev tools are not auto-started with sandboxes.
+	devToolManager DevToolManager
 
 	// stopCh is used to signal shutdown.
 	stopCh chan struct{}
@@ -64,10 +68,10 @@ type RuntimeManagerConfig struct {
 // DefaultRuntimeManagerConfig returns default runtime manager configuration.
 func DefaultRuntimeManagerConfig() *RuntimeManagerConfig {
 	return &RuntimeManagerConfig{
-		KataContainersEndpoint:  "/run/kata-containers/containerd/kata.sock",
-		GVisorEndpoint:          "/run/containerd/runsc.sock",
-		RuncEndpoint:            "/run/containerd/containerd.sock",
-		PoolEnabled:             true,
+		KataContainersEndpoint: "/run/kata-containers/containerd/kata.sock",
+		GVisorEndpoint:         "/run/containerd/runsc.sock",
+		RuncEndpoint:           "/run/containerd/containerd.sock",
+		PoolEnabled:            true,
 		PoolSize: map[sandboxv1alpha1.SandboxRuntimeType]int32{
 			sandboxv1alpha1.RuntimeKataContainers: 5,
 			sandboxv1alpha1.RuntimeGVisor:         10,
@@ -153,6 +157,44 @@ type RuntimeSpec struct {
 	NodeName string
 	// Annotations are runtime-specific annotations.
 	Annotations map[string]string
+	// DevTools specifies dev tools (JupyterLab, code-server) to auto-start
+	// with this sandbox. Tools are launched as child processes after the
+	// sandbox is created, inheriting all security restrictions.
+	DevTools []DevToolConfig `json:"devTools,omitempty"`
+}
+
+// DevToolType defines the type of development tool.
+type DevToolType string
+
+const (
+	// DevToolJupyterLab is the JupyterLab notebook environment.
+	DevToolJupyterLab DevToolType = "jupyter"
+	// DevToolCodeServer is the code-server (VS Code in browser) environment.
+	DevToolCodeServer DevToolType = "code-server"
+)
+
+// DevToolConfig specifies how a dev tool should be launched within a sandbox.
+type DevToolConfig struct {
+	// Type is the kind of dev tool to launch.
+	Type DevToolType `json:"type"`
+	// Enabled controls whether the tool is auto-started with the sandbox.
+	Enabled bool `json:"enabled"`
+	// Port is the port to listen on. If 0, a port is auto-allocated.
+	Port int `json:"port,omitempty"`
+	// AuthToken is an optional auth token (Jupyter token or code-server password).
+	// If empty, one is auto-generated.
+	AuthToken string `json:"authToken,omitempty"`
+	// AllowNoneAuth disables auth entirely. INSECURE — dev only.
+	AllowNoneAuth bool `json:"allowNoneAuth,omitempty"`
+}
+
+// DevToolManager is the interface for managing dev tool instances.
+// This is implemented by pkg/devtool.DevToolManager to avoid circular imports.
+type DevToolManager interface {
+	// Start launches a dev tool for the given sandbox.
+	Start(ctx context.Context, sandboxID string, config DevToolConfig, workingDir string) (instanceID string, port int, err error)
+	// StopAll stops all dev tools for a sandbox.
+	StopAll(ctx context.Context, sandboxID string) error
 }
 
 // RuntimeStatus represents the status of a sandbox runtime.
@@ -246,6 +288,14 @@ func NewRuntimeManager(config *RuntimeManagerConfig) *RuntimeManager {
 	}
 
 	return rm
+}
+
+// SetDevToolManager sets the dev tool manager for auto-starting
+// JupyterLab/code-server instances with sandboxes.
+func (rm *RuntimeManager) SetDevToolManager(mgr DevToolManager) {
+	rm.mu.Lock()
+	defer rm.mu.Unlock()
+	rm.devToolManager = mgr
 }
 
 // Start starts the runtime manager.
@@ -413,6 +463,26 @@ func (rm *RuntimeManager) CreateRuntime(ctx context.Context, spec *RuntimeSpec) 
 	rm.handles[key] = handle
 
 	klog.Infof("Created sandbox runtime for %s (type: %s, id: %s)", key, spec.RuntimeType, handle.ID())
+
+	// Auto-start dev tools if configured
+	if rm.devToolManager != nil && len(spec.DevTools) > 0 {
+		workingDir := spec.WorkingDir
+		if workingDir == "" {
+			workingDir = "/tmp"
+		}
+		for _, dtConfig := range spec.DevTools {
+			if !dtConfig.Enabled {
+				continue
+			}
+			instanceID, port, err := rm.devToolManager.Start(ctx, handle.ID(), dtConfig, workingDir)
+			if err != nil {
+				klog.Warningf("Failed to start dev tool %s for sandbox %s: %v", dtConfig.Type, handle.ID(), err)
+			} else {
+				klog.Infof("Started dev tool %s for sandbox %s: instance=%s port=%d", dtConfig.Type, handle.ID(), instanceID, port)
+			}
+		}
+	}
+
 	return handle, nil
 }
 
@@ -452,6 +522,13 @@ func (rm *RuntimeManager) StopRuntime(ctx context.Context, key string) error {
 	provider, exists := rm.providers[spec.RuntimeType]
 	if !exists {
 		return fmt.Errorf("no provider for runtime type %s", spec.RuntimeType)
+	}
+
+	// Stop all dev tools for this sandbox before stopping the runtime
+	if rm.devToolManager != nil {
+		if err := rm.devToolManager.StopAll(ctx, handle.ID()); err != nil {
+			klog.Warningf("Failed to stop dev tools for sandbox %s: %v", handle.ID(), err)
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, rm.config.StopTimeout)
